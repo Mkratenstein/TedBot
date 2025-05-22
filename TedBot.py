@@ -77,6 +77,18 @@ class GooseBandTracker(commands.Bot):
     def __init__(self, intents: discord.Intents):
         super().__init__(command_prefix='!', intents=intents)
         
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize tracking variables
+        self.current_tracking = {
+            'last_video_id': '',
+            'last_livestream_id': '',
+            'last_short_id': '',
+            'videos': {}
+        }
+        self.posted_videos = {'videos': {}}
+        
         # Validate required environment variables
         self._validate_env_vars()
         
@@ -214,9 +226,9 @@ class GooseBandTracker(commands.Bot):
             with open(test_file, 'w') as f:
                 f.write('test')
             os.remove(test_file)
-            logger.info(f"Successfully verified write access to {base_path}")
+            self.logger.info(f"Successfully verified write access to {base_path}")
         except Exception as e:
-            logger.error(f"Error setting up data directory {base_path}: {e}")
+            self.logger.error(f"Error setting up data directory {base_path}: {e}")
             raise RuntimeError(f"Cannot write to data directory: {e}")
         
         # Initialize paths for both tracking files
@@ -227,18 +239,10 @@ class GooseBandTracker(commands.Bot):
             # Load current tracking
             if os.path.exists(self.current_tracking_file):
                 with open(self.current_tracking_file, 'r') as f:
-                    data = json.load(f)
-                    self.last_video_id = data.get('last_video_id', '')
-                    self.last_livestream_id = data.get('last_livestream_id', '')
-                    self.last_short_id = data.get('last_short_id', '')
-                    self.last_check_time = datetime.fromisoformat(data.get('last_check_time', datetime.now().isoformat()))
-                    logger.info(f"Loaded current tracking: last_video_id={self.last_video_id}, last_livestream_id={self.last_livestream_id}, last_short_id={self.last_short_id}")
+                    self.current_tracking = json.load(f)
+                    self.logger.info(f"Loaded current tracking: last_video_id={self.current_tracking['last_video_id']}, last_livestream_id={self.current_tracking['last_livestream_id']}, last_short_id={self.current_tracking['last_short_id']}")
             else:
-                logger.info(f"No current tracking file found, starting fresh")
-                self.last_video_id = ''
-                self.last_livestream_id = ''
-                self.last_short_id = ''
-                self.last_check_time = datetime.now()
+                self.logger.info(f"No current tracking file found, starting fresh")
                 # Create initial tracking file
                 self._save_tracking_vars()
             
@@ -246,21 +250,22 @@ class GooseBandTracker(commands.Bot):
             if os.path.exists(self.posted_videos_file):
                 with open(self.posted_videos_file, 'r') as f:
                     self.posted_videos = json.load(f)
-                    logger.info(f"Loaded {len(self.posted_videos.get('videos', {}))} posted videos from history")
+                    self.logger.info(f"Loaded {len(self.posted_videos.get('videos', {}))} posted videos from history")
             else:
-                logger.info("No posted videos history found, starting fresh")
-                self.posted_videos = {'videos': {}}
+                self.logger.info("No posted videos history found, starting fresh")
                 # Create initial history file
                 with open(self.posted_videos_file, 'w') as f:
                     json.dump(self.posted_videos, f, indent=2)
                 
         except Exception as e:
-            logger.error(f"Error loading tracking variables: {e}")
+            self.logger.error(f"Error loading tracking variables: {e}")
             # Initialize with empty values
-            self.last_video_id = ''
-            self.last_livestream_id = ''
-            self.last_short_id = ''
-            self.last_check_time = datetime.now()
+            self.current_tracking = {
+                'last_video_id': '',
+                'last_livestream_id': '',
+                'last_short_id': '',
+                'videos': {}
+            }
             self.posted_videos = {'videos': {}}
             # Try to create fresh tracking files
             try:
@@ -268,82 +273,80 @@ class GooseBandTracker(commands.Bot):
                 with open(self.posted_videos_file, 'w') as f:
                     json.dump(self.posted_videos, f, indent=2)
             except Exception as save_error:
-                logger.error(f"Failed to create fresh tracking files: {save_error}")
+                self.logger.error(f"Failed to create fresh tracking files: {save_error}")
         
         self.active_tasks: set = set()
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 3
 
     def _save_tracking_vars(self) -> None:
-        """Save tracking variables with improved error handling"""
+        """Save tracking variables to files"""
         try:
             # Save current tracking
-            current_data = {
-                'last_video_id': self.last_video_id,
-                'last_livestream_id': self.last_livestream_id,
-                'last_short_id': self.last_short_id,
-                'last_check_time': self.last_check_time.isoformat()
-            }
-            
-            # Use atomic write for current tracking
-            temp_file = f"{self.current_tracking_file}.tmp"
-            with open(temp_file, 'w') as f:
-                json.dump(current_data, f, indent=2)
-            os.replace(temp_file, self.current_tracking_file)
-            
-            logger.info(f"Saved current tracking: last_video_id={self.last_video_id}, last_livestream_id={self.last_livestream_id}, last_short_id={self.last_short_id}")
+            with open(self.current_tracking_file, 'w') as f:
+                json.dump(self.current_tracking, f, indent=4)
             
             # Save posted videos history
-            temp_history_file = f"{self.posted_videos_file}.tmp"
-            with open(temp_history_file, 'w') as f:
-                json.dump(self.posted_videos, f, indent=2)
-            os.replace(temp_history_file, self.posted_videos_file)
-            
-            logger.info(f"Saved {len(self.posted_videos.get('videos', {}))} posted videos to history")
+            with open(self.posted_videos_file, 'w') as f:
+                json.dump(self.posted_videos, f, indent=4)
+                
+            self.logger.info("Successfully saved tracking variables")
             
         except Exception as e:
-            logger.error(f"Error saving tracking variables: {e}")
-            # Try to clean up any temporary files
-            for temp_file in [f"{self.current_tracking_file}.tmp", f"{self.posted_videos_file}.tmp"]:
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                except Exception as cleanup_error:
-                    logger.error(f"Error cleaning up temporary file {temp_file}: {cleanup_error}")
-            raise  # Re-raise the original error
+            self.logger.error(f"Error saving tracking variables: {str(e)}")
+            self.logger.error(f"Error type: {type(e).__name__}")
 
     def _is_video_posted(self, video_id: str) -> bool:
         """Check if a video has already been posted to Discord"""
         return video_id in self.posted_videos.get('videos', {})
 
-    def _add_posted_video(self, video_id: str, video_type: str, discord_message_id: str) -> None:
-        """Add a video to the posted videos history"""
-        self.posted_videos['videos'][video_id] = {
-            'type': video_type,
-            'posted_at': datetime.now().isoformat(),
-            'discord_message_id': discord_message_id
-        }
+    def _add_posted_video(self, video_id: str, video_type: str, message_id: str) -> None:
+        """Add a video to the posted videos tracking"""
+        try:
+            # Add to current tracking
+            if video_id not in self.current_tracking['videos']:
+                self.current_tracking['videos'][video_id] = {
+                    'type': video_type,
+                    'message_id': message_id,
+                    'posted_at': datetime.now().isoformat()
+                }
+            
+            # Add to posted videos history
+            if video_id not in self.posted_videos['videos']:
+                self.posted_videos['videos'][video_id] = {
+                    'type': video_type,
+                    'message_id': message_id,
+                    'posted_at': datetime.now().isoformat()
+                }
+            
+            self.logger.info(f"Added video {video_id} to tracking with type {video_type}")
+            
+        except Exception as e:
+            self.logger.error(f"Error adding video to tracking: {str(e)}")
+            self.logger.error(f"Error type: {type(e).__name__}")
 
     def _cleanup_old_entries(self, max_age_days: int = 30) -> None:
         """Remove entries older than max_age_days from the posted videos history"""
         try:
             cutoff_date = datetime.now() - timedelta(days=max_age_days)
-            old_entries = []
+            cutoff_iso = cutoff_date.isoformat()
             
-            for video_id, data in self.posted_videos.get('videos', {}).items():
-                posted_at = datetime.fromisoformat(data['posted_at'])
-                if posted_at < cutoff_date:
-                    old_entries.append(video_id)
+            # Clean up posted videos history
+            old_entries = [
+                video_id for video_id, data in self.posted_videos['videos'].items()
+                if data['posted_at'] < cutoff_iso
+            ]
             
             for video_id in old_entries:
                 del self.posted_videos['videos'][video_id]
             
             if old_entries:
-                logger.info(f"Cleaned up {len(old_entries)} old entries from posting history")
+                self.logger.info(f"Removed {len(old_entries)} old entries from posted videos history")
                 self._save_tracking_vars()
-                
+            
         except Exception as e:
-            logger.error(f"Error cleaning up old entries: {e}")
+            self.logger.error(f"Error cleaning up old entries: {str(e)}")
+            self.logger.error(f"Error type: {type(e).__name__}")
 
     def _register_commands(self) -> None:
         """Register bot commands"""
@@ -375,7 +378,7 @@ class GooseBandTracker(commands.Bot):
                 ).execute()
                 
                 if not playlist_response.get('items'):
-                    logger.warning("No videos found in uploads playlist")
+                    self.logger.warning("No videos found in uploads playlist")
                     await interaction.followup.send("No videos found in the channel.")
                     return
 
@@ -397,7 +400,7 @@ class GooseBandTracker(commands.Bot):
                 await interaction.followup.send(embed=embed)
                 
             except Exception as e:
-                logger.error(f"Error in random_youtube command: {e}")
+                self.logger.error(f"Error in random_youtube command: {e}")
                 if not interaction.response.is_done():
                     await interaction.response.send_message("Sorry, there was an error getting a random video.", ephemeral=True)
                 else:
@@ -427,7 +430,7 @@ class GooseBandTracker(commands.Bot):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 
             except Exception as e:
-                logger.error(f"Error in status command: {e}")
+                self.logger.error(f"Error in status command: {e}")
                 await interaction.response.send_message("❌ Error checking status. Check logs for details.", ephemeral=True)
 
         @self.tree.command(name="postinghistory", description="View recent posting history")
@@ -486,7 +489,7 @@ class GooseBandTracker(commands.Bot):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
             except Exception as e:
-                logger.error(f"Error in posting_history command: {e}")
+                self.logger.error(f"Error in posting_history command: {e}")
                 if not interaction.response.is_done():
                     await interaction.response.send_message("Sorry, there was an error getting the posting history.", ephemeral=True)
                 else:
@@ -518,20 +521,20 @@ class GooseBandTracker(commands.Bot):
             if error.resp.status in [429, 500, 503]:  # Rate limit or server errors
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= self.max_consecutive_errors:
-                    logger.error("Too many consecutive errors, stopping YouTube checks")
+                    self.logger.error("Too many consecutive errors, stopping YouTube checks")
                     self.check_youtube_updates.stop()
                     return False
                 # Exponential backoff
                 await asyncio.sleep(2 ** self.consecutive_errors)
             else:
-                logger.error(f"YouTube API error: {error}")
+                self.logger.error(f"YouTube API error: {error}")
         else:
-            logger.error(f"Unexpected error: {error}")
+            self.logger.error(f"Unexpected error: {error}")
         return True
 
     async def on_ready(self) -> None:
         """Called when the bot is ready and connected to Discord"""
-        logger.info(f'Logged in as {self.user.name}')
+        self.logger.info(f'Logged in as {self.user.name}')
         
         # Initialize tracking without posting
         await self.initialize_tracking()
@@ -550,7 +553,7 @@ class GooseBandTracker(commands.Bot):
             self.logger.info("Initializing tracking without posting...")
             
             # Get recent videos
-            videos = self.youtube.get_recent_videos(max_results=50)
+            videos = self.get_recent_videos(max_results=50)
             if not videos:
                 self.logger.warning("No videos found during initialization")
                 return
@@ -560,7 +563,8 @@ class GooseBandTracker(commands.Bot):
             self.current_tracking = {
                 'last_video_id': latest_video['id'],
                 'last_livestream_id': '',
-                'last_short_id': ''
+                'last_short_id': '',
+                'videos': {}
             }
             
             # Add all videos to posted history without sending messages
@@ -588,9 +592,9 @@ class GooseBandTracker(commands.Bot):
         try:
             # Get current tracking data
             current_data = {
-                'last_video_id': self.last_video_id,
-                'last_livestream_id': self.last_livestream_id,
-                'last_short_id': self.last_short_id
+                'last_video_id': self.current_tracking['last_video_id'],
+                'last_livestream_id': self.current_tracking['last_livestream_id'],
+                'last_short_id': self.current_tracking['last_short_id']
             }
             
             # Add each video to history if it exists and isn't already there
@@ -617,10 +621,10 @@ class GooseBandTracker(commands.Bot):
             with open(self.posted_videos_file, 'w') as f:
                 json.dump(self.posted_videos, f, indent=2)
             
-            logger.info(f"Merged current tracking into history. Total unique videos: {len(unique_videos)}")
+            self.logger.info(f"Merged current tracking into history. Total unique videos: {len(unique_videos)}")
             
         except Exception as e:
-            logger.error(f"Error merging tracking to history: {e}")
+            self.logger.error(f"Error merging tracking to history: {e}")
 
     @tasks.loop(minutes=15)
     async def check_youtube_updates(self):
@@ -629,7 +633,7 @@ class GooseBandTracker(commands.Bot):
             self.logger.info("Checking for new YouTube videos...")
             
             # Get recent videos
-            videos = self.youtube.get_recent_videos(max_results=50)
+            videos = self.get_recent_videos(max_results=50)
             if not videos:
                 self.logger.warning("No videos found")
                 return
@@ -650,7 +654,7 @@ class GooseBandTracker(commands.Bot):
                         continue
                     
                     # Get video details
-                    video_details = self.youtube.get_video_details(video_id)
+                    video_details = self.get_video_details(video_id)
                     if not video_details:
                         continue
                         
@@ -688,6 +692,124 @@ class GooseBandTracker(commands.Bot):
     async def before_check_youtube_updates(self) -> None:
         """Wait for bot to be ready before starting YouTube check loop"""
         await self.wait_until_ready()
+
+    def get_recent_videos(self, max_results: int = 50) -> List[Dict[str, Any]]:
+        """Get recent videos from the channel with rate limiting"""
+        try:
+            # Get channel uploads playlist ID
+            channel_response = self.youtube.channels().list(
+                part='contentDetails',
+                id=self.youtube_channel_id
+            ).execute()
+            
+            if not channel_response.get('items'):
+                self.logger.error(f"Could not find YouTube channel with ID: {self.youtube_channel_id}")
+                return []
+            
+            uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+            
+            # Get recent videos
+            playlist_response = self.youtube.playlistItems().list(
+                part='snippet',
+                playlistId=uploads_playlist_id,
+                maxResults=max_results
+            ).execute()
+            
+            if not playlist_response.get('items'):
+                self.logger.warning("No videos found in uploads playlist")
+                return []
+            
+            # Process videos
+            videos = []
+            for item in playlist_response['items']:
+                try:
+                    video_id = item['snippet']['resourceId']['videoId']
+                    published_at = datetime.fromisoformat(item['snippet']['publishedAt'].replace('Z', '+00:00'))
+                    
+                    videos.append({
+                        'id': video_id,
+                        'title': item['snippet']['title'],
+                        'published_at': published_at
+                    })
+                except Exception as e:
+                    self.logger.error(f"Error processing video: {str(e)}")
+                    continue
+            
+            return videos
+            
+        except Exception as e:
+            self.logger.error(f"Error getting recent videos: {str(e)}")
+            return []
+
+    def get_video_details(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """Get detailed information about a video"""
+        try:
+            video_response = self.youtube.videos().list(
+                part='snippet,liveStreamingDetails',
+                id=video_id
+            ).execute()
+            
+            if not video_response.get('items'):
+                self.logger.warning(f"No video details found for video ID: {video_id}")
+                return None
+            
+            return video_response['items'][0]['snippet']
+            
+        except Exception as e:
+            self.logger.error(f"Error getting video details: {str(e)}")
+            return None
+
+    async def _post_video(self, video_id: str, video_type: str) -> None:
+        """Post a video notification to Discord"""
+        try:
+            channel = self.get_channel(self.discord_channel_id)
+            if not channel:
+                self.logger.error(f"Could not find Discord channel with ID: {self.discord_channel_id}")
+                return
+            
+            # Log channel permissions
+            bot_member = channel.guild.get_member(self.user.id)
+            if bot_member:
+                self.logger.info(f"Bot permissions in channel {channel.name}:")
+                self.logger.info(f"- Send Messages: {channel.permissions_for(bot_member).send_messages}")
+                self.logger.info(f"- Embed Links: {channel.permissions_for(bot_member).embed_links}")
+                self.logger.info(f"- Read Messages: {channel.permissions_for(bot_member).read_messages}")
+            else:
+                self.logger.error(f"Could not find bot member in guild {channel.guild.name}")
+                return
+            
+            # Prepare message based on video type
+            if video_type == 'livestream':
+                message = f"🔴 Goose is LIVE on YouTube!\nhttps://www.youtube.com/watch?v={video_id}"
+            elif video_type == 'short':
+                message = f"🎥 New YouTube Short!\nhttps://www.youtube.com/watch?v={video_id}"
+            else:
+                message = f"🎥 New YouTube Video!\nhttps://www.youtube.com/watch?v={video_id}"
+            
+            # Send message
+            self.logger.info(f"Sending {video_type} notification for video {video_id}")
+            self.logger.info(f"Attempting to send message to channel {channel.id} in guild {channel.guild.id}")
+            
+            sent_message = await channel.send(message)
+            self.logger.info(f"Successfully sent message with ID: {sent_message.id}")
+            
+            # Update tracking
+            self._add_posted_video(video_id, video_type, str(sent_message.id))
+            self._save_tracking_vars()
+            
+        except discord.Forbidden as e:
+            self.logger.error(f"Forbidden error sending {video_type} notification: {e}")
+            self.logger.error(f"Channel ID: {channel.id}, Guild ID: {channel.guild.id}")
+            self.logger.error(f"Bot ID: {self.user.id}")
+            self.logger.error(f"HTTP Status: {e.status}")
+            self.logger.error(f"Error Code: {e.code}")
+        except discord.HTTPException as e:
+            self.logger.error(f"HTTP error sending {video_type} notification: {e}")
+            self.logger.error(f"Status: {e.status}")
+            self.logger.error(f"Response: {e.response}")
+        except Exception as e:
+            self.logger.error(f"Error sending {video_type} notification: {str(e)}")
+            self.logger.error(f"Error type: {type(e).__name__}")
 
 def main() -> None:
     try:

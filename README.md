@@ -22,6 +22,7 @@ This Discord bot tracks the Goose the Band YouTube channel, sending notification
 - `DISCORD_CHANNEL_ID`: The Discord channel where notifications will be sent
 - `YOUTUBE_CHANNEL_ID`: The YouTube channel ID to track
 - `YOUTUBE_API_KEY`: Your YouTube Data API v3 key
+- `DISCORD_RANDOM_CHANNEL_ID`: The Discord channel ID where the `/randomyoutube` command can be used.
 
 ## Deployment
 This bot is configured for easy deployment on Railway:
@@ -40,9 +41,13 @@ python TedBot.py
 - YouTube Shorts detection
 - 15-minute update interval
 - Comprehensive logging for tracking and debugging
-- Simple Discord commands:
-  - `!ping`: Check if bot is alive
-  - `!status`: Check bot and YouTube connection status
+- Robust tracking system using `current_tracking.json` (for current session) and `posted_videos.json` (for historical posts) to prevent reposts.
+- Automatic cleanup of video posting history (default: entries older than 30 days).
+- Simple Discord slash commands:
+  - `/ping`: Check if bot is alive
+  - `/status`: Check bot and YouTube connection status
+  - `/randomyoutube`: Get a random video from the channel (posts to the channel specified in `DISCORD_RANDOM_CHANNEL_ID`)
+  - `/postinghistory`: View recent posting history (default: last 7 days)
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first.
