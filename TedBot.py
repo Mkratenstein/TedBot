@@ -206,7 +206,18 @@ class GooseBandTracker(commands.Bot):
         """Initialize tracking variables with container-aware path handling"""
         # Use /data in Railway, local data directory otherwise
         base_path = '/data' if os.path.exists('/data') else 'data'
-        os.makedirs(base_path, exist_ok=True)
+        
+        try:
+            # Ensure directory exists and is writable
+            os.makedirs(base_path, exist_ok=True)
+            test_file = os.path.join(base_path, '.test')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            logger.info(f"Successfully verified write access to {base_path}")
+        except Exception as e:
+            logger.error(f"Error setting up data directory {base_path}: {e}")
+            raise RuntimeError(f"Cannot write to data directory: {e}")
         
         # Initialize paths for both tracking files
         self.current_tracking_file = os.path.join(base_path, 'current_tracking.json')
@@ -228,6 +239,8 @@ class GooseBandTracker(commands.Bot):
                 self.last_livestream_id = ''
                 self.last_short_id = ''
                 self.last_check_time = datetime.now()
+                # Create initial tracking file
+                self._save_tracking_vars()
             
             # Load posted videos history
             if os.path.exists(self.posted_videos_file):
@@ -237,21 +250,32 @@ class GooseBandTracker(commands.Bot):
             else:
                 logger.info("No posted videos history found, starting fresh")
                 self.posted_videos = {'videos': {}}
+                # Create initial history file
+                with open(self.posted_videos_file, 'w') as f:
+                    json.dump(self.posted_videos, f, indent=2)
                 
         except Exception as e:
             logger.error(f"Error loading tracking variables: {e}")
+            # Initialize with empty values
             self.last_video_id = ''
             self.last_livestream_id = ''
             self.last_short_id = ''
             self.last_check_time = datetime.now()
             self.posted_videos = {'videos': {}}
+            # Try to create fresh tracking files
+            try:
+                self._save_tracking_vars()
+                with open(self.posted_videos_file, 'w') as f:
+                    json.dump(self.posted_videos, f, indent=2)
+            except Exception as save_error:
+                logger.error(f"Failed to create fresh tracking files: {save_error}")
         
         self.active_tasks: set = set()
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 3
 
     def _save_tracking_vars(self) -> None:
-        """Save tracking variables to files"""
+        """Save tracking variables with improved error handling"""
         try:
             # Save current tracking
             current_data = {
@@ -261,29 +285,32 @@ class GooseBandTracker(commands.Bot):
                 'last_check_time': self.last_check_time.isoformat()
             }
             
-            # Create a temporary file first
+            # Use atomic write for current tracking
             temp_file = f"{self.current_tracking_file}.tmp"
             with open(temp_file, 'w') as f:
-                json.dump(current_data, f)
-            
-            # Then rename it to the actual file (atomic operation)
+                json.dump(current_data, f, indent=2)
             os.replace(temp_file, self.current_tracking_file)
             
+            logger.info(f"Saved current tracking: last_video_id={self.last_video_id}, last_livestream_id={self.last_livestream_id}, last_short_id={self.last_short_id}")
+            
             # Save posted videos history
-            temp_file = f"{self.posted_videos_file}.tmp"
-            with open(temp_file, 'w') as f:
-                json.dump(self.posted_videos, f)
+            temp_history_file = f"{self.posted_videos_file}.tmp"
+            with open(temp_history_file, 'w') as f:
+                json.dump(self.posted_videos, f, indent=2)
+            os.replace(temp_history_file, self.posted_videos_file)
             
-            os.replace(temp_file, self.posted_videos_file)
-            
-            logger.info(f"Saved tracking variables and posted videos history")
-            logger.info(f"Current tracking state: last_video_id={self.last_video_id}, last_livestream_id={self.last_livestream_id}, last_short_id={self.last_short_id}")
-            logger.info(f"Total posted videos in history: {len(self.posted_videos.get('videos', {}))}")
+            logger.info(f"Saved {len(self.posted_videos.get('videos', {}))} posted videos to history")
             
         except Exception as e:
             logger.error(f"Error saving tracking variables: {e}")
-            logger.error(f"Attempted to save to: {self.current_tracking_file} and {self.posted_videos_file}")
-            logger.error(f"Current tracking state: last_video_id={self.last_video_id}, last_livestream_id={self.last_livestream_id}, last_short_id={self.last_short_id}")
+            # Try to clean up any temporary files
+            for temp_file in [f"{self.current_tracking_file}.tmp", f"{self.posted_videos_file}.tmp"]:
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except Exception as cleanup_error:
+                    logger.error(f"Error cleaning up temporary file {temp_file}: {cleanup_error}")
+            raise  # Re-raise the original error
 
     def _is_video_posted(self, video_id: str) -> bool:
         """Check if a video has already been posted to Discord"""
@@ -564,10 +591,16 @@ class GooseBandTracker(commands.Bot):
                     # Update tracking without posting
                     if is_livestream:
                         self.last_livestream_id = video_id
+                        # Add to posted videos without Discord message ID
+                        self._add_posted_video(video_id, 'livestream', 'initialized')
                     elif is_short:
                         self.last_short_id = video_id
+                        # Add to posted videos without Discord message ID
+                        self._add_posted_video(video_id, 'short', 'initialized')
                     else:
                         self.last_video_id = video_id
+                        # Add to posted videos without Discord message ID
+                        self._add_posted_video(video_id, 'video', 'initialized')
                         
                 except Exception as e:
                     logger.error(f"Error processing video during initialization: {str(e)}")
@@ -580,19 +613,44 @@ class GooseBandTracker(commands.Bot):
         except Exception as e:
             logger.error(f"Error during tracking initialization: {str(e)}")
 
-    @tasks.loop(hours=1)
-    async def cleanup_old_entries(self) -> None:
-        """Clean up old entries from the posted videos history"""
+    def _merge_tracking_to_history(self) -> None:
+        """Merge current tracking into posted videos history and remove duplicates"""
         try:
-            logger.info("Running scheduled cleanup of old entries...")
-            self._cleanup_old_entries()
+            # Get current tracking data
+            current_data = {
+                'last_video_id': self.last_video_id,
+                'last_livestream_id': self.last_livestream_id,
+                'last_short_id': self.last_short_id
+            }
+            
+            # Add each video to history if it exists and isn't already there
+            for video_type, video_id in [
+                ('video', current_data['last_video_id']),
+                ('livestream', current_data['last_livestream_id']),
+                ('short', current_data['last_short_id'])
+            ]:
+                if video_id and video_id not in self.posted_videos.get('videos', {}):
+                    self._add_posted_video(video_id, video_type, 'merged')
+            
+            # Remove any duplicates (keeping the most recent entry)
+            seen_videos = set()
+            unique_videos = {}
+            
+            for video_id, data in self.posted_videos.get('videos', {}).items():
+                if video_id not in seen_videos:
+                    seen_videos.add(video_id)
+                    unique_videos[video_id] = data
+            
+            self.posted_videos['videos'] = unique_videos
+            
+            # Save the updated history
+            with open(self.posted_videos_file, 'w') as f:
+                json.dump(self.posted_videos, f, indent=2)
+            
+            logger.info(f"Merged current tracking into history. Total unique videos: {len(unique_videos)}")
+            
         except Exception as e:
-            logger.error(f"Error in cleanup task: {e}")
-
-    @cleanup_old_entries.before_loop
-    async def before_cleanup_old_entries(self) -> None:
-        """Wait for bot to be ready before starting cleanup loop"""
-        await self.wait_until_ready()
+            logger.error(f"Error merging tracking to history: {e}")
 
     @tasks.loop(minutes=15)
     async def check_youtube_updates(self) -> None:
@@ -738,9 +796,12 @@ class GooseBandTracker(commands.Bot):
                     if not await self.handle_api_error(e):
                         return
                     continue
-                    
+            
             # Update last check time
             self.last_check_time = datetime.now()
+            
+            # Merge current tracking into history and remove duplicates
+            self._merge_tracking_to_history()
             
         except Exception as e:
             logger.error(f"Error in check_youtube_updates: {str(e)}")
