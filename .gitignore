@@ -1,6 +1,8 @@
-# Data directory
-data/
-
+# Environment variables and secrets
+.env
+*.env
+passwords.txt
+secrets.txt
 
 # Python
 __pycache__/
@@ -20,10 +22,25 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Data files
+data/
 
 # Logs
 *.log
