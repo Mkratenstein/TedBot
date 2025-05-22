@@ -1,0 +1,12 @@
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "python TedBot.py"
+healthcheckPath = "/"
+healthcheckTimeout = 100
+restartPolicy = "always"
+
+[deploy.volumes]
+data = "/data" 

@@ -1,0 +1,1 @@
+web: mkdir -p /data && python TedBot.py 
