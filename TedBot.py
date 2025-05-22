@@ -622,72 +622,67 @@ class GooseBandTracker(commands.Bot):
         except Exception as e:
             logger.error(f"Error merging tracking to history: {e}")
 
+    @tasks.loop(minutes=15)
     async def check_youtube_updates(self):
         """Check for new YouTube videos and post them to Discord."""
-        while True:
-            try:
-                self.logger.info("Checking for new YouTube videos...")
-                
-                # Get recent videos
-                videos = self.youtube.get_recent_videos(max_results=50)
-                if not videos:
-                    self.logger.warning("No videos found")
-                    await asyncio.sleep(900)  # 15 minutes
+        try:
+            self.logger.info("Checking for new YouTube videos...")
+            
+            # Get recent videos
+            videos = self.youtube.get_recent_videos(max_results=50)
+            if not videos:
+                self.logger.warning("No videos found")
+                return
+            
+            # Process each video
+            for video in videos:
+                try:
+                    video_id = video['id']
+                    published_at = video['published_at']
+                    
+                    # Skip if video is too old
+                    if published_at < datetime.now(published_at.tzinfo) - timedelta(days=30):
+                        self.logger.info(f"Skipping video {video_id} - too old")
+                        continue
+                    
+                    # Check if video is already posted
+                    if self._is_video_posted(video_id):
+                        continue
+                    
+                    # Get video details
+                    video_details = self.youtube.get_video_details(video_id)
+                    if not video_details:
+                        continue
+                        
+                    is_livestream = video_details.get('liveBroadcastContent') == 'live'
+                    is_short = video_details.get('title', '').lower().startswith('#shorts')
+                    
+                    # Update tracking and post if needed
+                    if is_livestream:
+                        if video_id != self.current_tracking['last_livestream_id']:
+                            await self._post_video(video_id, 'livestream')
+                            self.current_tracking['last_livestream_id'] = video_id
+                    elif is_short:
+                        if video_id != self.current_tracking['last_short_id']:
+                            await self._post_video(video_id, 'short')
+                            self.current_tracking['last_short_id'] = video_id
+                    else:
+                        if video_id != self.current_tracking['last_video_id']:
+                            await self._post_video(video_id, 'video')
+                            self.current_tracking['last_video_id'] = video_id
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing video {video_id}: {str(e)}")
                     continue
                 
-                # Process each video
-                for video in videos:
-                    try:
-                        video_id = video['id']
-                        published_at = video['published_at']
-                        
-                        # Skip if video is too old
-                        if published_at < datetime.now(published_at.tzinfo) - timedelta(days=30):
-                            self.logger.info(f"Skipping video {video_id} - too old")
-                            continue
-                        
-                        # Check if video is already posted
-                        if self._is_video_posted(video_id):
-                            continue
-                        
-                        # Get video details
-                        video_details = self.youtube.get_video_details(video_id)
-                        if not video_details:
-                            continue
-                            
-                        is_livestream = video_details.get('liveBroadcastContent') == 'live'
-                        is_short = video_details.get('title', '').lower().startswith('#shorts')
-                        
-                        # Update tracking and post if needed
-                        if is_livestream:
-                            if video_id != self.current_tracking['last_livestream_id']:
-                                await self._post_video(video_id, 'livestream')
-                                self.current_tracking['last_livestream_id'] = video_id
-                        elif is_short:
-                            if video_id != self.current_tracking['last_short_id']:
-                                await self._post_video(video_id, 'short')
-                                self.current_tracking['last_short_id'] = video_id
-                        else:
-                            if video_id != self.current_tracking['last_video_id']:
-                                await self._post_video(video_id, 'video')
-                                self.current_tracking['last_video_id'] = video_id
-                        
-                    except Exception as e:
-                        self.logger.error(f"Error processing video {video_id}: {str(e)}")
-                        continue
-                
-                # Merge current tracking into history
-                self._merge_tracking_to_history()
-                
-                # Save tracking variables
-                self._save_tracking_vars()
-                
-                # Wait before next check
-                await asyncio.sleep(900)  # 15 minutes
-                
-            except Exception as e:
-                self.logger.error(f"Error in check_youtube_updates: {str(e)}")
-                await asyncio.sleep(60)  # Wait 1 minute before retrying
+            # Merge current tracking into history
+            self._merge_tracking_to_history()
+            
+            # Save tracking variables
+            self._save_tracking_vars()
+            
+        except Exception as e:
+            self.logger.error(f"Error in check_youtube_updates: {str(e)}")
 
     @check_youtube_updates.before_loop
     async def before_check_youtube_updates(self) -> None:
