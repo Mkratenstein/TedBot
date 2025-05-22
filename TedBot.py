@@ -545,73 +545,43 @@ class GooseBandTracker(commands.Bot):
         self.active_tasks.add(self.cleanup_old_entries)
 
     async def initialize_tracking(self) -> None:
-        """Initialize tracking without posting to Discord"""
+        """Initialize tracking variables and posted videos history without posting."""
         try:
-            logger.info("Initializing tracking without posting...")
+            self.logger.info("Initializing tracking without posting...")
             
-            # Get channel uploads playlist ID (cached)
-            uploads_playlist_id = await self.get_uploads_playlist_id()
-            
-            # Get recent videos with rate limiting
-            await self.rate_limiter.acquire()
-            playlist_response = self.youtube.playlistItems().list(
-                part='snippet',
-                playlistId=uploads_playlist_id,
-                maxResults=50
-            ).execute()
-            
-            if not playlist_response.get('items'):
-                logger.warning("No videos found in uploads playlist during initialization")
+            # Get recent videos
+            videos = self.youtube.get_recent_videos(max_results=50)
+            if not videos:
+                self.logger.warning("No videos found during initialization")
                 return
-                
-            # Process videos
-            for item in playlist_response['items']:
-                try:
-                    video_id = item['snippet']['resourceId']['videoId']
-                    published_at = datetime.fromisoformat(item['snippet']['publishedAt'].replace('Z', '+00:00'))
-                    
-                    # Skip if video is too old
-                    if published_at < datetime.now(published_at.tzinfo) - timedelta(days=30):
-                        continue
-                        
-                    # Get video details
-                    await self.rate_limiter.acquire()
-                    video_response = self.youtube.videos().list(
-                        part='snippet,liveStreamingDetails',
-                        id=video_id
-                    ).execute()
-                    
-                    if not video_response.get('items'):
-                        continue
-                        
-                    video = video_response['items'][0]
-                    is_livestream = video.get('snippet', {}).get('liveBroadcastContent') == 'live'
-                    is_short = video.get('snippet', {}).get('title', '').lower().startswith('#shorts')
-                    
-                    # Update tracking without posting
-                    if is_livestream:
-                        self.last_livestream_id = video_id
-                        # Add to posted videos without Discord message ID
-                        self._add_posted_video(video_id, 'livestream', 'initialized')
-                    elif is_short:
-                        self.last_short_id = video_id
-                        # Add to posted videos without Discord message ID
-                        self._add_posted_video(video_id, 'short', 'initialized')
-                    else:
-                        self.last_video_id = video_id
-                        # Add to posted videos without Discord message ID
-                        self._add_posted_video(video_id, 'video', 'initialized')
-                        
-                except Exception as e:
-                    logger.error(f"Error processing video during initialization: {str(e)}")
-                    continue
             
-            # Save tracking variables
+            # Initialize tracking with the most recent video
+            latest_video = videos[0]
+            self.current_tracking = {
+                'last_video_id': latest_video['id'],
+                'last_livestream_id': '',
+                'last_short_id': ''
+            }
+            
+            # Add all videos to posted history without sending messages
+            for video in videos:
+                video_id = video['id']
+                if not self._is_video_posted(video_id):
+                    self.posted_videos[video_id] = {
+                        'title': video['title'],
+                        'url': f"https://www.youtube.com/watch?v={video_id}",
+                        'published_at': video['published_at'],
+                        'type': 'video',
+                        'status': 'initialized'  # Mark as initialized instead of posted
+                    }
+            
+            # Save both tracking files
             self._save_tracking_vars()
-            logger.info("Tracking initialization complete")
+            self.logger.info("Tracking initialization complete")
             
         except Exception as e:
-            logger.error(f"Error during tracking initialization: {str(e)}")
+            self.logger.error(f"Error during initialization: {str(e)}")
+            raise
 
     def _merge_tracking_to_history(self) -> None:
         """Merge current tracking into posted videos history and remove duplicates"""
@@ -652,161 +622,72 @@ class GooseBandTracker(commands.Bot):
         except Exception as e:
             logger.error(f"Error merging tracking to history: {e}")
 
-    @tasks.loop(minutes=15)
-    async def check_youtube_updates(self) -> None:
-        """Check for new YouTube content with improved error handling and caching"""
-        try:
-            # Reset error counter on successful check
-            self.consecutive_errors = 0
-            
-            # Get channel uploads playlist ID (cached)
-            uploads_playlist_id = await self.get_uploads_playlist_id()
-            
-            # Get recent videos with rate limiting
-            await self.rate_limiter.acquire()
-            playlist_response = self.youtube.playlistItems().list(
-                part='snippet',
-                playlistId=uploads_playlist_id,
-                maxResults=50  # Increased from 10 to catch more videos
-            ).execute()
-            
-            if not playlist_response.get('items'):
-                logger.warning("No videos found in uploads playlist")
-                return
+    async def check_youtube_updates(self):
+        """Check for new YouTube videos and post them to Discord."""
+        while True:
+            try:
+                self.logger.info("Checking for new YouTube videos...")
                 
-            # Process videos
-            for item in playlist_response['items']:
-                try:
-                    video_id = item['snippet']['resourceId']['videoId']
-                    published_at = datetime.fromisoformat(item['snippet']['publishedAt'].replace('Z', '+00:00'))
-                    
-                    logger.info(f"Processing video: {video_id} published at {published_at}")
-                    
-                    # Skip if video is too old (increased to 30 days)
-                    if published_at < datetime.now(published_at.tzinfo) - timedelta(days=30):
-                        logger.info(f"Skipping video {video_id} - too old")
-                        continue
-                        
-                    # Get video details with rate limiting
-                    await self.rate_limiter.acquire()
-                    video_response = self.youtube.videos().list(
-                        part='snippet,liveStreamingDetails',
-                        id=video_id
-                    ).execute()
-                    
-                    if not video_response.get('items'):
-                        logger.warning(f"No video details found for video ID: {video_id}")
-                        continue
-                        
-                    video = video_response['items'][0]
-                    is_livestream = video.get('snippet', {}).get('liveBroadcastContent') == 'live'
-                    is_short = video.get('snippet', {}).get('title', '').lower().startswith('#shorts')
-                    
-                    logger.info(f"Video {video_id} - Livestream: {is_livestream}, Short: {is_short}")
-                    logger.info(f"Last video ID: {self.last_video_id}, Last short ID: {self.last_short_id}, Last livestream ID: {self.last_livestream_id}")
-                    
-                    channel = self.get_channel(self.discord_channel_id)
-                    
-                    if not channel:
-                        logger.error(f"Could not find Discord channel with ID: {self.discord_channel_id}")
-                        return
-                        
-                    # Log channel permissions
-                    bot_member = channel.guild.get_member(self.user.id)
-                    if bot_member:
-                        logger.info(f"Bot permissions in channel {channel.name}:")
-                        logger.info(f"- Send Messages: {channel.permissions_for(bot_member).send_messages}")
-                        logger.info(f"- Embed Links: {channel.permissions_for(bot_member).embed_links}")
-                        logger.info(f"- Read Messages: {channel.permissions_for(bot_member).read_messages}")
-                    else:
-                        logger.error(f"Could not find bot member in guild {channel.guild.name}")
-                    
-                    # Send notifications for new content
-                    if is_livestream and not self._is_video_posted(video_id):
-                        logger.info(f"Sending livestream notification for video {video_id}")
-                        try:
-                            logger.info(f"Attempting to send message to channel {channel.id} in guild {channel.guild.id}")
-                            message = await channel.send(f"🔴 Goose is LIVE on YouTube!\nhttps://www.youtube.com/watch?v={video_id}")
-                            logger.info(f"Successfully sent message with ID: {message.id}")
-                            self.last_livestream_id = video_id
-                            self._add_posted_video(video_id, 'livestream', str(message.id))
-                            self._save_tracking_vars()  # Save after successful notification
-                        except discord.Forbidden as e:
-                            logger.error(f"Forbidden error sending livestream notification: {e}")
-                            logger.error(f"Channel ID: {channel.id}, Guild ID: {channel.guild.id}")
-                            logger.error(f"Bot ID: {self.user.id}")
-                            logger.error(f"HTTP Status: {e.status}")
-                            logger.error(f"Error Code: {e.code}")
-                        except discord.HTTPException as e:
-                            logger.error(f"HTTP error sending livestream notification: {e}")
-                            logger.error(f"Status: {e.status}")
-                            logger.error(f"Response: {e.response}")
-                        except Exception as e:
-                            logger.error(f"Error sending livestream notification: {str(e)}")
-                            logger.error(f"Error type: {type(e).__name__}")
-                    elif is_short and not self._is_video_posted(video_id):
-                        logger.info(f"Sending short notification for video {video_id}")
-                        try:
-                            logger.info(f"Attempting to send message to channel {channel.id} in guild {channel.guild.id}")
-                            message = await channel.send(f"🎥 New YouTube Short!\nhttps://www.youtube.com/watch?v={video_id}")
-                            logger.info(f"Successfully sent message with ID: {message.id}")
-                            self.last_short_id = video_id
-                            self._add_posted_video(video_id, 'short', str(message.id))
-                            self._save_tracking_vars()  # Save after successful notification
-                        except discord.Forbidden as e:
-                            logger.error(f"Forbidden error sending short notification: {e}")
-                            logger.error(f"Channel ID: {channel.id}, Guild ID: {channel.guild.id}")
-                            logger.error(f"Bot ID: {self.user.id}")
-                            logger.error(f"HTTP Status: {e.status}")
-                            logger.error(f"Error Code: {e.code}")
-                        except discord.HTTPException as e:
-                            logger.error(f"HTTP error sending short notification: {e}")
-                            logger.error(f"Status: {e.status}")
-                            logger.error(f"Response: {e.response}")
-                        except Exception as e:
-                            logger.error(f"Error sending short notification: {str(e)}")
-                            logger.error(f"Error type: {type(e).__name__}")
-                    elif not is_livestream and not is_short and not self._is_video_posted(video_id):
-                        logger.info(f"Sending video notification for video {video_id}")
-                        try:
-                            logger.info(f"Attempting to send message to channel {channel.id} in guild {channel.guild.id}")
-                            message = await channel.send(f"🎥 New YouTube Video!\nhttps://www.youtube.com/watch?v={video_id}")
-                            logger.info(f"Successfully sent message with ID: {message.id}")
-                            self.last_video_id = video_id
-                            self._add_posted_video(video_id, 'video', str(message.id))
-                            self._save_tracking_vars()  # Save after successful notification
-                        except discord.Forbidden as e:
-                            logger.error(f"Forbidden error sending video notification: {e}")
-                            logger.error(f"Channel ID: {channel.id}, Guild ID: {channel.guild.id}")
-                            logger.error(f"Bot ID: {self.user.id}")
-                            logger.error(f"HTTP Status: {e.status}")
-                            logger.error(f"Error Code: {e.code}")
-                        except discord.HTTPException as e:
-                            logger.error(f"HTTP error sending video notification: {e}")
-                            logger.error(f"Status: {e.status}")
-                            logger.error(f"Response: {e.response}")
-                        except Exception as e:
-                            logger.error(f"Error sending video notification: {str(e)}")
-                            logger.error(f"Error type: {type(e).__name__}")
-                    else:
-                        logger.info(f"No notification sent for video {video_id} - already processed")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing video: {str(e)}")
-                    if not await self.handle_api_error(e):
-                        return
+                # Get recent videos
+                videos = self.youtube.get_recent_videos(max_results=50)
+                if not videos:
+                    self.logger.warning("No videos found")
+                    await asyncio.sleep(900)  # 15 minutes
                     continue
-            
-            # Update last check time
-            self.last_check_time = datetime.now()
-            
-            # Merge current tracking into history and remove duplicates
-            self._merge_tracking_to_history()
-            
-        except Exception as e:
-            logger.error(f"Error in check_youtube_updates: {str(e)}")
-            if not await self.handle_api_error(e):
-                return
+                
+                # Process each video
+                for video in videos:
+                    try:
+                        video_id = video['id']
+                        published_at = video['published_at']
+                        
+                        # Skip if video is too old
+                        if published_at < datetime.now(published_at.tzinfo) - timedelta(days=30):
+                            self.logger.info(f"Skipping video {video_id} - too old")
+                            continue
+                        
+                        # Check if video is already posted
+                        if self._is_video_posted(video_id):
+                            continue
+                        
+                        # Get video details
+                        video_details = self.youtube.get_video_details(video_id)
+                        if not video_details:
+                            continue
+                            
+                        is_livestream = video_details.get('liveBroadcastContent') == 'live'
+                        is_short = video_details.get('title', '').lower().startswith('#shorts')
+                        
+                        # Update tracking and post if needed
+                        if is_livestream:
+                            if video_id != self.current_tracking['last_livestream_id']:
+                                await self._post_video(video_id, 'livestream')
+                                self.current_tracking['last_livestream_id'] = video_id
+                        elif is_short:
+                            if video_id != self.current_tracking['last_short_id']:
+                                await self._post_video(video_id, 'short')
+                                self.current_tracking['last_short_id'] = video_id
+                        else:
+                            if video_id != self.current_tracking['last_video_id']:
+                                await self._post_video(video_id, 'video')
+                                self.current_tracking['last_video_id'] = video_id
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing video {video_id}: {str(e)}")
+                        continue
+                
+                # Merge current tracking into history
+                self._merge_tracking_to_history()
+                
+                # Save tracking variables
+                self._save_tracking_vars()
+                
+                # Wait before next check
+                await asyncio.sleep(900)  # 15 minutes
+                
+            except Exception as e:
+                self.logger.error(f"Error in check_youtube_updates: {str(e)}")
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
 
     @check_youtube_updates.before_loop
     async def before_check_youtube_updates(self) -> None:
