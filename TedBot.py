@@ -89,9 +89,25 @@ class GooseBandTracker(commands.Bot):
         self.posted_videos_data: Dict[str, Dict[str, Any]] = {} # Stores video_id: {details}
         # current_scrape and ready_for_discord will be transient lists of video details
         
-        self._validate_env_vars()
+        # Initialize YouTube API client first, as _validate_env_vars will use it.
+        # Note: _validate_env_vars also checks if YOUTUBE_API_KEY is the placeholder.
+        # This means YOUTUBE_API_KEY must be available from os.getenv() here.
+        youtube_api_key_for_build = os.getenv('YOUTUBE_API_KEY')
+        if not youtube_api_key_for_build or youtube_api_key_for_build == 'your_youtube_api_key_here':
+            self.logger.critical("YouTube API key is missing or is the placeholder. Cannot initialize YouTube client.")
+            # We will still proceed to _validate_env_vars which will then raise a more specific error about the key.
+            # Or, we could raise an error immediately here.
+            # For now, let _validate_env_vars handle the detailed error logging/raising.
+            self.youtube = None # Ensure it exists as None if build fails or key is bad
+        else:
+            try:
+                self.youtube = build('youtube', 'v3', developerKey=youtube_api_key_for_build)
+            except Exception as e:
+                self.logger.critical(f"Failed to build YouTube client: {e}")
+                self.youtube = None # Ensure it exists as None if build fails
         
-        self.youtube = build('youtube', 'v3', developerKey=os.getenv('YOUTUBE_API_KEY'))
+        self._validate_env_vars() # Now call validation, which uses self.youtube
+        
         self.rate_limiter = RateLimiter(max_requests=90, time_window=60) # Adjusted slightly
         
         self._init_tracking_vars() # This will now initialize the three files
@@ -127,6 +143,16 @@ class GooseBandTracker(commands.Bot):
         if not self.youtube_channel_id.startswith('UC'):
             self.logger.warning(f"YouTube channel ID '{self.youtube_channel_id}' may not be valid.")
         
+        # Explicitly check if the YouTube client was initialized before trying to use it for API validation
+        if self.youtube is None:
+            self.logger.critical(
+                "YouTube API client (self.youtube) could not be initialized. "
+                "This could be due to a missing/placeholder API key (which should have been caught earlier), "
+                "an invalid API key that passed the placeholder check, or other issues during client build. "
+                "Check previous logs for specific errors during YouTube client build."
+            )
+            raise ValueError("YouTube API client is not available. Cannot validate API key/channel ID via API call.")
+
         try:
             self.youtube.channels().list(part='id', id=self.youtube_channel_id).execute()
             self.logger.info("Successfully validated YouTube API key and channel ID.")
