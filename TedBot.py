@@ -255,8 +255,8 @@ class GooseBandTracker(commands.Bot):
 
                     self.logger.debug(f"Page {pages_processed}, Item {item_index + 1}: Processing videoId: {video_id}, uploadStatus: {upload_status}, privacyStatus: {privacy_status}, publishedAt: {published_at_raw}")
 
-                    # Ensure video is public and processed by YouTube
-                    if upload_status == "processed" and privacy_status == "public":
+                    # Ensure video is public
+                    if privacy_status == "public":
                         if video_id and published_at_raw:
                             try:
                                 published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
@@ -687,9 +687,8 @@ class GooseBandTracker(commands.Bot):
 
             videos_details = []
             for item in response.get("items", []):
-                 # Ensure video is public and processed
-                if item.get("status", {}).get("uploadStatus") == "processed" and \
-                   item.get("status", {}).get("privacyStatus") == "public":
+                 # Ensure video is public
+                if item.get("status", {}).get("privacyStatus") == "public":
                     video_id = item.get("contentDetails", {}).get("videoId")
                     snippet = item.get("snippet", {})
                     published_at_raw = snippet.get("publishedAt")
