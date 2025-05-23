@@ -1,1 +1,1 @@
-web: mkdir -p /data && python TedBot.py 
+worker: mkdir -p /data && python TedBot.py 

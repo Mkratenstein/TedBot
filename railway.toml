@@ -3,7 +3,7 @@ builder = "nixpacks"
 buildCommand = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "python TedBot.py"
+# startCommand = "python TedBot.py" # Removed as Procfile is used
 restartPolicy = "always"
 
 [deploy.volumes]
