@@ -3,6 +3,7 @@
 *.env
 passwords.txt
 secrets.txt
+gooseyoutubepagesource.txt
 
 # Python
 __pycache__/
