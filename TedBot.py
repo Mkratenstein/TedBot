@@ -109,7 +109,7 @@ class GooseBandTracker(commands.Bot):
     def _validate_env_vars(self) -> None:
         required_vars = [
             'YOUTUBE_API_KEY', 'DISCORD_TOKEN', 'YOUTUBE_CHANNEL_ID',
-            'DISCORD_CHANNEL_ID', 'DISCORD_RANDOM_CHANNEL_ID'
+            'DISCORD_CHANNEL_ID'
         ]
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         if missing_vars:
@@ -120,7 +120,6 @@ class GooseBandTracker(commands.Bot):
         self.discord_token = os.getenv('DISCORD_TOKEN')
         self.youtube_channel_id = os.getenv('YOUTUBE_CHANNEL_ID')
         self.discord_channel_id = int(os.getenv('DISCORD_CHANNEL_ID'))
-        self.discord_random_channel_id = int(os.getenv('DISCORD_RANDOM_CHANNEL_ID'))
 
         if self.youtube_api_key == 'your_youtube_api_key_here':
             self.logger.critical("Default YouTube API key detected. Please configure.")
@@ -834,43 +833,6 @@ class GooseBandTracker(commands.Bot):
             latency = self.latency * 1000  # milliseconds
             await interaction.response.send_message(f'Pong! Goose Youtube Tracker is alive! Latency: {latency:.2f}ms', ephemeral=True)
             
-        @self.tree.command(name="randomyoutube", description="Get a random recent video from the channel")
-        async def random_youtube(interaction: discord.Interaction) -> None:
-            if interaction.channel_id != self.discord_random_channel_id:
-                await interaction.response.send_message(f"This command can only be used in <#{self.discord_random_channel_id}>", ephemeral=True)
-                return
-            await interaction.response.defer()
-            try:
-                # Get recent videos, up to 50 for a good selection
-                recent_videos = await self.get_recent_videos(max_results=50)
-                if not recent_videos:
-                    await interaction.followup.send("Could not fetch recent videos to select a random one.")
-                    return
-
-                random_video_data = random_module.choice(recent_videos)
-                video_id = random_video_data["id"]
-                video_title = random_video_data["title"]
-                
-                # Get full details for embed (includes thumbnail)
-                full_video_details = await self.get_video_details(video_id)
-                thumbnail_url = full_video_details.get("thumbnail_url") if full_video_details else \
-                                random_video_data.get("thumbnail_url") # Fallback
-
-                embed = discord.Embed(
-                    title="Random Goose Video",
-                    description=f"**{video_title}**",
-                    url=f"https://www.youtube.com/watch?v={video_id}",
-                    color=discord.Color.random() # Random color
-                )
-                if thumbnail_url:
-                    embed.set_thumbnail(url=thumbnail_url)
-                embed.set_footer(text=f"Published: {datetime.fromisoformat(random_video_data['published_at']).strftime('%Y-%m-%d %H:%M')}")
-                
-                await interaction.followup.send(embed=embed)
-            except Exception as e:
-                self.logger.error(f"Error in random_youtube command: {e}", exc_info=True)
-                await interaction.followup.send("Sorry, an error occurred while getting a random video.", ephemeral=True)
-
         @self.tree.command(name="status", description="Check bot and YouTube connection status")
         async def status(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
