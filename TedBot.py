@@ -23,8 +23,8 @@ os.makedirs(DATA_BASE_PATH, exist_ok=True) # Ensure it exists
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(os.path.join(DATA_BASE_PATH, 'bot.log')) # Log to /data/bot.log or data/bot.log
@@ -242,20 +242,27 @@ class GooseBandTracker(commands.Bot):
                 )
                 response = request.execute()
 
-                for item in response.get("items", []):
+                items_on_page = response.get("items", [])
+                self.logger.info(f"Page {pages_processed}: Received {len(items_on_page)} items from API before filtering.")
+
+                for item_index, item in enumerate(items_on_page):
+                    video_id = item.get("contentDetails", {}).get("videoId")
+                    snippet = item.get("snippet", {})
+                    status = item.get("status", {})
+                    upload_status = status.get("uploadStatus")
+                    privacy_status = status.get("privacyStatus")
+                    published_at_raw = snippet.get("publishedAt")
+
+                    self.logger.debug(f"Page {pages_processed}, Item {item_index + 1}: Processing videoId: {video_id}, uploadStatus: {upload_status}, privacyStatus: {privacy_status}, publishedAt: {published_at_raw}")
+
                     # Ensure video is public and processed by YouTube
-                    if item.get("status", {}).get("uploadStatus") == "processed" and \
-                       item.get("status", {}).get("privacyStatus") == "public":
-                        video_id = item.get("contentDetails", {}).get("videoId")
-                        snippet = item.get("snippet", {})
-                        published_at_raw = snippet.get("publishedAt")
-                        
+                    if upload_status == "processed" and privacy_status == "public":
                         if video_id and published_at_raw:
                             try:
                                 published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
                             except ValueError:
-                                self.logger.warning(f"Could not parse publishedAt for video {video_id}: {published_at_raw}")
-                                published_at = datetime.now() # Fallback or skip
+                                self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Could not parse publishedAt for video {video_id}: {published_at_raw}. Skipping item.")
+                                continue # Skip this item
 
                             all_videos.append({
                                 "id": video_id,
@@ -265,6 +272,11 @@ class GooseBandTracker(commands.Bot):
                                 "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url", "")
                                 # Add other relevant details if needed
                             })
+                            self.logger.debug(f"Page {pages_processed}, Item {item_index + 1}: Appended video {video_id}.")
+                        else:
+                            self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Skipped due to missing videoId ('{video_id}') or publishedAt ('{published_at_raw}').")
+                    else:
+                        self.logger.info(f"Page {pages_processed}, Item {item_index + 1}: Skipped videoId {video_id} due to status (Upload: {upload_status}, Privacy: {privacy_status}).")
                 
                 next_page_token = response.get("nextPageToken")
                 if not next_page_token:
