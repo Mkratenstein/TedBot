@@ -260,6 +260,10 @@ class GooseBandTracker(commands.Bot):
                         if video_id and published_at_raw:
                             try:
                                 published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
+                                # Skip future-dated videos
+                                if published_at > datetime.now(timezone.utc):
+                                    self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Skipping future-dated video {video_id} with publish date {published_at}")
+                                    continue
                             except ValueError:
                                 self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Could not parse publishedAt for video {video_id}: {published_at_raw}. Skipping item.")
                                 continue # Skip this item
