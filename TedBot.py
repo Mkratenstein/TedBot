@@ -261,8 +261,9 @@ class GooseBandTracker(commands.Bot):
                             try:
                                 published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
                                 # Skip future-dated videos
-                                if published_at > datetime.now(timezone.utc):
-                                    self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Skipping future-dated video {video_id} with publish date {published_at}")
+                                current_time = datetime.now(timezone.utc)
+                                if published_at > current_time:
+                                    self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Skipping future-dated video {video_id} with publish date {published_at} (current time: {current_time})")
                                     continue
                             except ValueError:
                                 self.logger.warning(f"Page {pages_processed}, Item {item_index + 1}: Could not parse publishedAt for video {video_id}: {published_at_raw}. Skipping item.")
@@ -634,45 +635,49 @@ class GooseBandTracker(commands.Bot):
     @tasks.loop(hours=24)
     async def cleanup_posted_videos_task(self) -> None:
         try:
-            self.logger.info(f"Running cleanup task for {self.posted_videos_file}. Removing entries older than {self.history_cleanup_age_days} days.")
+            self.logger.info(f"Running size check for {self.posted_videos_file}.")
             if not self.posted_videos_data: # Ensure data is loaded
                 self.logger.warning("posted_videos_data not loaded for cleanup task. Skipping.")
                 return
 
-            videos_to_keep = {}
-            removed_count = 0
-            for video_id, data in self.posted_videos_data.items():
-                # Check based on 'posted_to_discord_at' or 'published_at' as fallback
-                entry_date_iso = data.get("posted_to_discord_at") or data.get("published_at")
-                # Calculate cutoff_date based on self.history_cleanup_age_days for comparison clarity
-                cutoff_datetime_for_check = datetime.now(timezone.utc) - timedelta(days=self.history_cleanup_age_days)
-
-                if entry_date_iso:
-                    try:
-                        entry_dt = datetime.fromisoformat(entry_date_iso.replace('Z', '+00:00'))
-                        if entry_dt.tzinfo is None: # Ensure aware for comparison
-                            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+            # Check file size (in MB)
+            try:
+                file_size_mb = os.path.getsize(self.posted_videos_file) / (1024 * 1024)
+                self.logger.info(f"Current size of {self.posted_videos_file}: {file_size_mb:.2f} MB")
+                
+                # If file is larger than 10MB, archive and trim
+                if file_size_mb > 10:
+                    self.logger.info(f"File size exceeds 10MB. Creating archive and trimming...")
+                    
+                    # Create archive with timestamp
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    archive_path = os.path.join(DATA_BASE_PATH, f'posted_videos_archive_{timestamp}.json')
+                    
+                    # Save current data to archive
+                    if self._save_json_data(archive_path, self.posted_videos_data):
+                        self.logger.info(f"Successfully created archive at {archive_path}")
                         
-                        if entry_dt < cutoff_datetime_for_check: # If entry is older than cutoff
-                            removed_count +=1
+                        # Keep only the most recent 1000 entries
+                        sorted_entries = sorted(
+                            self.posted_videos_data.items(),
+                            key=lambda x: x[1].get('posted_to_discord_at') or x[1].get('published_at', ''),
+                            reverse=True
+                        )
+                        trimmed_data = dict(sorted_entries[:1000])
+                        
+                        # Save trimmed data
+                        if self._save_json_data(self.posted_videos_file, trimmed_data):
+                            self.posted_videos_data = trimmed_data
+                            self.logger.info(f"Successfully trimmed history to {len(trimmed_data)} entries")
                         else:
-                            videos_to_keep[video_id] = data
-                    except ValueError:
-                        self.logger.warning(f"Cleanup: Could not parse date '{entry_date_iso}' for video {video_id}. Keeping it.")
-                        videos_to_keep[video_id] = data # Keep if date unparseable
-                else: 
-                    videos_to_keep[video_id] = data
-                    self.logger.warning(f"Video {video_id} in history has no date for cleanup comparison. Keeping.")
-            
-            if removed_count > 0:
-                self.logger.info(f"Removing {removed_count} old entries from {self.posted_videos_file}.")
-                if self._save_json_data(self.posted_videos_file, videos_to_keep):
-                    self.posted_videos_data = videos_to_keep # Update in-memory
-                    self.logger.info("Successfully removed old entries and saved history.")
+                            self.logger.error("Failed to save trimmed history")
+                    else:
+                        self.logger.error("Failed to create archive")
                 else:
-                    self.logger.error("Failed to save history after removing old entries.")
-            else:
-                self.logger.info("No old entries to remove from history.")
+                    self.logger.info("File size is within acceptable limits. No cleanup needed.")
+                    
+            except OSError as e:
+                self.logger.error(f"Error checking file size: {e}")
             
         except Exception as e:
             self.logger.error(f"Error in cleanup_posted_videos_task: {e}", exc_info=True)
@@ -680,7 +685,7 @@ class GooseBandTracker(commands.Bot):
     @cleanup_posted_videos_task.before_loop
     async def before_cleanup_posted_videos_task(self) -> None:
         await self.wait_until_ready()
-        self.logger.info("Cleanup task for posted_videos.json is ready.")
+        self.logger.info("Size check task for posted_videos.json is ready.")
 
     async def get_recent_videos(self, max_results: int = 25, published_after: Optional[datetime] = None) -> Optional[List[Dict[str, Any]]]:
         self.logger.info(f"Fetching up to {max_results} recent videos{' since ' + published_after.isoformat() if published_after else ''}...")
@@ -711,6 +716,12 @@ class GooseBandTracker(commands.Bot):
                             # Skip if before published_after date
                             if published_after and published_at < published_after:
                                 self.logger.debug(f"Skipping video {video_id} published at {published_at} (before {published_after})")
+                                continue
+
+                            # Skip future-dated videos
+                            current_time = datetime.now(timezone.utc)
+                            if published_at > current_time:
+                                self.logger.warning(f"Skipping future-dated video {video_id} with publish date {published_at} (current time: {current_time})")
                                 continue
 
                             video_info = {
