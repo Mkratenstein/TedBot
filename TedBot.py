@@ -430,30 +430,38 @@ class GooseBandTracker(commands.Bot):
 
     async def _scrape_youtube_and_save(self) -> Optional[List[Dict[str, Any]]]:
         self.logger.info("STEP 1: Scraping YouTube for recent videos...")
-        # Fetch a decent number of recent videos to reduce chances of missing one during bot downtime.
-        # Max_results for playlistItems is 50. Let's use that.
-        scraped_videos_details = await self.get_recent_videos(max_results=50) 
-
-        if scraped_videos_details is None: 
-            self.logger.error("Scrape Step: Failed to fetch recent videos from YouTube (get_recent_videos returned None).")
-            return None 
         
+        # Determine if this is the first run
+        is_first_run = not self.first_run_after_init_complete
+        
+        if is_first_run:
+            self.logger.info("First run detected - fetching all videos")
+            scraped_videos_details = await self._get_all_channel_videos()
+        else:
+            # Get videos from yesterday and today
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+            yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            self.logger.info(f"Regular run - fetching videos published since {yesterday.isoformat()}")
+            scraped_videos_details = await self.get_recent_videos(max_results=50, published_after=yesterday)
+
+        if scraped_videos_details is None:
+            self.logger.error("Scrape Step: Failed to fetch videos from YouTube.")
+            return None
+
         if not scraped_videos_details:
-            self.logger.info("Scrape Step: No videos found in the recent scrape.")
-            # Save empty list to ensure current_scrape.json is clean
+            self.logger.info("Scrape Step: No videos found in the scrape.")
             if self._save_json_data(self.current_scrape_file, []):
-                return [] # Return empty list, not None
+                return []
             else:
                 self.logger.error(f"Scrape Step: Failed to save empty list to {self.current_scrape_file}")
-                return None # Error saving
+                return None
 
-        # Save the raw list of videos to current_scrape.json
         if self._save_json_data(self.current_scrape_file, scraped_videos_details):
             self.logger.info(f"Scrape Step: Successfully saved {len(scraped_videos_details)} videos to {self.current_scrape_file}")
             return scraped_videos_details
         else:
             self.logger.error(f"Scrape Step: Failed to save {len(scraped_videos_details)} scraped videos to {self.current_scrape_file}")
-            return None # Indicate failure to save
+            return None
 
     async def _compare_and_prepare_posts(self, current_scraped_videos: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
         self.logger.info("STEP 2: Comparing scraped videos with master history...")
@@ -670,16 +678,16 @@ class GooseBandTracker(commands.Bot):
         await self.wait_until_ready()
         self.logger.info("Cleanup task for posted_videos.json is ready.")
 
-    async def get_recent_videos(self, max_results: int = 25) -> Optional[List[Dict[str, Any]]]:
-        self.logger.info(f"Fetching up to {max_results} recent videos...")
+    async def get_recent_videos(self, max_results: int = 25, published_after: Optional[datetime] = None) -> Optional[List[Dict[str, Any]]]:
+        self.logger.info(f"Fetching up to {max_results} recent videos{' since ' + published_after.isoformat() if published_after else ''}...")
         try:
             uploads_playlist_id = await self.get_uploads_playlist_id()
             if not uploads_playlist_id:
                 return None
-
+            
             await self.rate_limiter.acquire()
             request = self.youtube.playlistItems().list(
-                part="snippet,contentDetails,status", # Ensure status is included
+                part="snippet,contentDetails,status",
                 playlistId=uploads_playlist_id,
                 maxResults=max_results
             )
@@ -687,7 +695,6 @@ class GooseBandTracker(commands.Bot):
 
             videos_details = []
             for item in response.get("items", []):
-                 # Ensure video is public
                 if item.get("status", {}).get("privacyStatus") == "public":
                     video_id = item.get("contentDetails", {}).get("videoId")
                     snippet = item.get("snippet", {})
@@ -696,51 +703,28 @@ class GooseBandTracker(commands.Bot):
                     if video_id and published_at_raw:
                         try:
                             published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
+                            
+                            # Skip if before published_after date
+                            if published_after and published_at < published_after:
+                                self.logger.debug(f"Skipping video {video_id} published at {published_at} (before {published_after})")
+                                continue
+
+                            video_info = {
+                                "id": video_id,
+                                "title": snippet.get("title", "N/A"),
+                                "description": snippet.get("description", ""),
+                                "published_at": published_at.isoformat(),
+                                "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url", "")
+                            }
+                            video_info["type"] = "video"
+                            videos_details.append(video_info)
                         except ValueError:
                             self.logger.warning(f"Could not parse publishedAt for recent video {video_id}: {published_at_raw}")
-                            continue # Skip if date is unparseable
+                            continue
 
-                        video_info = {
-                            "id": video_id,
-                            "title": snippet.get("title", "N/A"),
-                            "description": snippet.get("description", ""),
-                            "published_at": published_at.isoformat(), # Store as ISO string
-                            "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url", "")
-                            # Consider fetching liveStreamingDetails here if possible to determine type,
-                            # or do it in a separate get_video_details call per video later.
-                            # For now, keeping it simple for the scrape.
-                        }
-                        # Attempt to determine type (live, upcoming, none)
-                        # This needs a self.get_video_details call per video, which might be API intensive here.
-                        # Postponing accurate type determination to the _post_new_videos stage if needed.
-                        video_info["type"] = "video" # Default, to be refined
-                        
-                        # Fetch liveStreamingDetails to determine if it's a live video or premiere
-                        # This adds an API call per video in the scrape, consider impact.
-                        # For now, deferring detailed type check.
-                        videos_details.append(video_info)
-            
-            # Filter out videos older than the cleanup age to prevent reposting of cleaned history items
-            cutoff_datetime_for_scrape = datetime.now(timezone.utc) - timedelta(days=self.history_cleanup_age_days)
-            final_videos_to_return = []
-            for video in videos_details:
-                try:
-                    published_dt = datetime.fromisoformat(video["published_at"])
-                    if published_dt.tzinfo is None:
-                        published_dt = published_dt.replace(tzinfo=timezone.utc) # Make aware for comparison
-                    
-                    if published_dt >= cutoff_datetime_for_scrape:
-                        final_videos_to_return.append(video)
-                    else:
-                        self.logger.info(f"Scrape: Video ID {video.get('id')} ({video.get('title')}) published at {video['published_at']} is older than cleanup age ({self.history_cleanup_age_days} days). Skipping.")
-                except ValueError:
-                    self.logger.warning(f"Scrape: Could not parse published_at '{video.get('published_at')}' for video ID {video.get('id')}. Skipping this video for age check.")
-                    # Optionally, keep it if date unparseable, or skip. Skipping for safety.
-                    continue 
-
-            self.logger.info(f"Successfully fetched {len(videos_details)} recent videos, {len(final_videos_to_return)} remain after age filter.")
+            self.logger.info(f"Successfully fetched {len(videos_details)} recent videos.")
             self.consecutive_api_errors = 0
-            return final_videos_to_return
+            return videos_details
 
         except HttpError as e:
             self.logger.error(f"HttpError in get_recent_videos: {e.resp.status} - {e.content}", exc_info=True)
