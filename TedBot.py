@@ -229,6 +229,9 @@ class GooseBandTracker(commands.Bot):
 
         max_pages = 50 # Safety break for very large channels / quota protection
         pages_processed = 0
+        total_items_processed = 0
+        earliest_date = None
+        latest_date = None
 
         while pages_processed < max_pages:
             pages_processed += 1
@@ -243,7 +246,8 @@ class GooseBandTracker(commands.Bot):
                 response = request.execute()
 
                 items_on_page = response.get("items", [])
-                self.logger.info(f"Page {pages_processed}: Received {len(items_on_page)} items from API before filtering.")
+                total_items_processed += len(items_on_page)
+                self.logger.info(f"Page {pages_processed}: Received {len(items_on_page)} items from API before filtering. Total items processed so far: {total_items_processed}")
 
                 for item_index, item in enumerate(items_on_page):
                     video_id = item.get("contentDetails", {}).get("videoId")
@@ -260,6 +264,12 @@ class GooseBandTracker(commands.Bot):
                         if video_id and published_at_raw:
                             try:
                                 published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
+                                # Update earliest/latest dates
+                                if earliest_date is None or published_at < earliest_date:
+                                    earliest_date = published_at
+                                if latest_date is None or published_at > latest_date:
+                                    latest_date = published_at
+                                
                                 # Skip future-dated videos
                                 current_time = datetime.now(timezone.utc)
                                 if published_at > current_time:
@@ -285,7 +295,9 @@ class GooseBandTracker(commands.Bot):
                 
                 next_page_token = response.get("nextPageToken")
                 if not next_page_token:
-                    self.logger.info(f"Finished fetching all videos. Total: {len(all_videos)} videos.")
+                    self.logger.info(f"Finished fetching all videos. Total items processed: {total_items_processed}, Total videos added: {len(all_videos)}")
+                    if earliest_date and latest_date:
+                        self.logger.info(f"Date range of videos: {earliest_date.isoformat()} to {latest_date.isoformat()}")
                     break 
                 self.logger.info(f"Fetched page {pages_processed}, got {len(response.get('items', []))} items. Next page token: {next_page_token is not None}")
                 await asyncio.sleep(1) # Small delay between pages
@@ -307,7 +319,9 @@ class GooseBandTracker(commands.Bot):
                 break # Stop on unexpected errors for safety
 
         self.consecutive_api_errors = 0 # Reset after successful (or partially successful) scrape
-        self.logger.info(f"Completed fetching all videos. Found {len(all_videos)} videos after {pages_processed} pages.")
+        self.logger.info(f"Completed fetching all videos. Found {len(all_videos)} videos after {pages_processed} pages. Total items processed: {total_items_processed}")
+        if earliest_date and latest_date:
+            self.logger.info(f"Final date range of videos: {earliest_date.isoformat()} to {latest_date.isoformat()}")
         return all_videos
 
     async def _populate_initial_history(self) -> None:
