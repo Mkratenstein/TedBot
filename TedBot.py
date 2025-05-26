@@ -564,7 +564,15 @@ class GooseBandTracker(commands.Bot):
             final_video_data_for_history = {**basic_video_data, **full_details}
 
             video_title = final_video_data_for_history.get("title", "N/A")
-            video_type = final_video_data_for_history.get("type", "video") # Type from get_video_details
+            video_type = final_video_data_for_history.get("type", "video")
+            scheduled_start = final_video_data_for_history.get("scheduled_start_time")
+            actual_start = final_video_data_for_history.get("actual_start_time")
+            actual_end = final_video_data_for_history.get("actual_end_time")
+
+            # Log detailed premiere information
+            if scheduled_start or actual_start or actual_end:
+                self.logger.info(f"Post Step: Video {video_id} ({video_title}) has premiere details - "
+                               f"Scheduled: {scheduled_start}, Actual Start: {actual_start}, End: {actual_end}")
 
             if video_type == "upcoming_live":
                 self.logger.info(f"Post Step: Video {video_id} ({video_title}) is an upcoming live/premiere. Not posting notification now.")
@@ -579,7 +587,11 @@ class GooseBandTracker(commands.Bot):
             elif video_type == 'short':
                 message_content = f"🎞️ New YouTube Short: **{video_title}**\nhttps://www.youtube.com/shorts/{video_id}" # Use shorts link
             else: # Default to video
-                message_content = f"🎥 New YouTube Video: **{video_title}**\nhttps://www.youtube.com/watch?v={video_id}"
+                # Check if this was a premiere
+                if scheduled_start and actual_start:
+                    message_content = f"🎥 New YouTube Video (Premiered): **{video_title}**\nhttps://www.youtube.com/watch?v={video_id}"
+                else:
+                    message_content = f"🎥 New YouTube Video: **{video_title}**\nhttps://www.youtube.com/watch?v={video_id}"
 
             try:
                 self.logger.info(f"Post Step: Sending Discord message for {video_type} ID {video_id}")
@@ -810,8 +822,26 @@ class GooseBandTracker(commands.Bot):
             lbc = video_details["live_broadcast_content"]
             title_lower = video_details["title"].lower()
             duration_seconds = self.parse_iso8601_duration(video_details["duration"])
+            current_time = datetime.now(timezone.utc)
 
-            if lbc == "live":
+            # Log detailed information about the video's status
+            self.logger.info(f"Video {video_id} details - Title: {video_details['title']}, "
+                           f"LiveBroadcastContent: {lbc}, "
+                           f"ScheduledStart: {video_details['scheduled_start_time']}, "
+                           f"ActualStart: {video_details['actual_start_time']}, "
+                           f"ActualEnd: {video_details['actual_end_time']}")
+
+            # Handle premiered videos
+            if lbc == "none" and video_details["scheduled_start_time"]:
+                # This was a premiere that has ended
+                scheduled_start = datetime.fromisoformat(video_details["scheduled_start_time"].replace('Z', '+00:00'))
+                if current_time > scheduled_start:
+                    self.logger.info(f"Video {video_id} was a premiere that has ended. Treating as regular video.")
+                    video_details["type"] = "video"
+                else:
+                    self.logger.info(f"Video {video_id} is an upcoming premiere. Will be posted when it starts.")
+                    video_details["type"] = "upcoming_live"
+            elif lbc == "live":
                 video_details["type"] = "livestream"
             elif lbc == "upcoming" and video_details["scheduled_start_time"]:
                 video_details["type"] = "upcoming_live"
