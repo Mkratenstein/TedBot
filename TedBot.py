@@ -341,7 +341,7 @@ class GooseBandTracker(commands.Bot):
                     "title": video_detail["title"],
                     "published_at": video_detail["published_at"], # Already ISO string
                     "type": "video", # Assume 'video', can be refined later if shorts/live have different fetch path
-                    "status": "history_initialized", # Special status
+                    "post_status": "history_initialized", # Special status (changed from "status" to "post_status")
                     "discord_message_id": None,
                     "posted_to_discord_at": None
                 }
@@ -508,8 +508,20 @@ class GooseBandTracker(commands.Bot):
                 self.logger.info(f"Compare Step: New video identified for posting: ID {video_id} - Title: {video_detail.get('title')}")
                 videos_ready_to_post.append(video_detail) # Add the whole dict as fetched
             else:
-                # self.logger.info(f"Compare Step: Video ID {video_id} already in master history. Skipping.")
-                pass # Video already known
+                # Check if video was actually posted or if it needs to be reprocessed
+                existing_video = self.posted_videos_data[video_id]
+                post_status = existing_video.get('post_status', existing_video.get('status', 'unknown'))
+                
+                # Reprocess if:
+                # 1. Status is "history_initialized" (from initial population, never posted)
+                # 2. Status is "unknown" (legacy or error)
+                # 3. posted_to_discord_at is None (never actually posted)
+                if post_status == "history_initialized" or post_status == "unknown" or existing_video.get('posted_to_discord_at') is None:
+                    self.logger.info(f"Compare Step: Video ID {video_id} exists in history but was never posted (status: {post_status}). Reprocessing for posting.")
+                    videos_ready_to_post.append(video_detail)
+                else:
+                    # Video was already successfully posted or skipped for valid reason
+                    self.logger.debug(f"Compare Step: Video ID {video_id} already processed with status: {post_status}")
         
         # Save the list of new videos (can be empty) to ready_for_discord.json
         if self._save_json_data(self.ready_for_discord_file, videos_ready_to_post):
@@ -1237,9 +1249,11 @@ class GooseBandTracker(commands.Bot):
                 in_history = video_id in self.posted_videos_data
                 if in_history:
                     video_data = self.posted_videos_data[video_id]
+                    # Handle both "post_status" and legacy "status" field
+                    post_status = video_data.get('post_status', video_data.get('status', 'unknown'))
                     embed.add_field(name="📋 In History", value="✅ Yes", inline=False)
                     embed.add_field(name="Title", value=video_data.get('title', 'N/A'), inline=False)
-                    embed.add_field(name="Status", value=video_data.get('post_status', 'unknown'), inline=True)
+                    embed.add_field(name="Status", value=post_status, inline=True)
                     embed.add_field(name="Type", value=video_data.get('type', 'unknown'), inline=True)
                     embed.add_field(name="Posted At", value=video_data.get('posted_to_discord_at', 'N/A'), inline=False)
                 else:
@@ -1267,6 +1281,48 @@ class GooseBandTracker(commands.Bot):
             except Exception as e:
                 self.logger.error(f"Error in check_video command: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Error checking video: {str(e)[:200]}", ephemeral=True)
+
+        @self.tree.command(name="force_post", description="Force post a specific video to Discord (bypasses history check)")
+        async def force_post(interaction: discord.Interaction, video_id: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                # Remove any URL formatting
+                video_id = video_id.replace('https://www.youtube.com/watch?v=', '').replace('https://youtu.be/', '').split('?')[0].split('&')[0]
+                
+                await interaction.followup.send(f"🔄 Fetching video details for {video_id}...", ephemeral=True)
+                
+                # Fetch video details
+                video_details = await self.get_video_details(video_id)
+                if not video_details:
+                    await interaction.followup.send(f"❌ Could not fetch video details for {video_id}. Check if the video exists.", ephemeral=True)
+                    return
+                
+                # Create a list with just this video
+                videos_to_post = [video_details]
+                
+                # Use the existing post function
+                await interaction.followup.send(f"📤 Posting video to Discord...", ephemeral=True)
+                processed_videos = await self._post_new_videos(videos_to_post)
+                
+                if processed_videos and len(processed_videos) > 0:
+                    result = processed_videos[0]
+                    post_status = result.get('post_status', 'unknown')
+                    
+                    if post_status == 'success':
+                        await interaction.followup.send(f"✅ Successfully posted video: **{result.get('title', 'N/A')}**\nhttps://www.youtube.com/watch?v={video_id}", ephemeral=True)
+                    elif post_status == 'skipped_upcoming':
+                        await interaction.followup.send(f"⏭️ Video is an upcoming premiere/live. Not posting yet.", ephemeral=True)
+                    else:
+                        await interaction.followup.send(f"❌ Failed to post video. Status: {post_status}", ephemeral=True)
+                    
+                    # Update history
+                    await self._update_master_history_and_cleanup(processed_videos)
+                else:
+                    await interaction.followup.send(f"❌ No video was processed. Check logs for details.", ephemeral=True)
+                    
+            except Exception as e:
+                self.logger.error(f"Error in force_post command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error force posting video: {str(e)[:200]}", ephemeral=True)
 
 def main() -> None:
     try:
