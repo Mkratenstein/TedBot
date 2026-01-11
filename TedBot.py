@@ -457,11 +457,12 @@ class GooseBandTracker(commands.Bot):
             self.logger.info("First run detected - fetching all videos")
             scraped_videos_details = await self._get_all_channel_videos()
         else:
-            # Get videos from yesterday and today
-            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-            yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-            self.logger.info(f"Regular run - fetching videos published since {yesterday.isoformat()}")
-            scraped_videos_details = await self.get_recent_videos(max_results=50, published_after=yesterday)
+            # Get videos from the last 3 days to ensure we don't miss any
+            # This is more inclusive than just "yesterday" and handles edge cases
+            three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
+            three_days_ago = three_days_ago.replace(hour=0, minute=0, second=0, microsecond=0)
+            self.logger.info(f"Regular run - fetching videos published since {three_days_ago.isoformat()}")
+            scraped_videos_details = await self.get_recent_videos(max_results=50, published_after=three_days_ago)
 
         if scraped_videos_details is None:
             self.logger.error("Scrape Step: Failed to fetch videos from YouTube.")
@@ -1222,6 +1223,50 @@ class GooseBandTracker(commands.Bot):
             except Exception as e:
                 self.logger.error(f"Error syncing commands: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Error syncing commands: {str(e)[:200]}", ephemeral=True)
+
+        @self.tree.command(name="check_video", description="Debug: Check if a specific video ID is in history or can be fetched")
+        async def check_video(interaction: discord.Interaction, video_id: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                # Remove any URL formatting
+                video_id = video_id.replace('https://www.youtube.com/watch?v=', '').replace('https://youtu.be/', '').split('?')[0].split('&')[0]
+                
+                embed = discord.Embed(title=f"🔍 Video Check: {video_id}", color=discord.Color.blue())
+                
+                # Check if in posted_videos history
+                in_history = video_id in self.posted_videos_data
+                if in_history:
+                    video_data = self.posted_videos_data[video_id]
+                    embed.add_field(name="📋 In History", value="✅ Yes", inline=False)
+                    embed.add_field(name="Title", value=video_data.get('title', 'N/A'), inline=False)
+                    embed.add_field(name="Status", value=video_data.get('post_status', 'unknown'), inline=True)
+                    embed.add_field(name="Type", value=video_data.get('type', 'unknown'), inline=True)
+                    embed.add_field(name="Posted At", value=video_data.get('posted_to_discord_at', 'N/A'), inline=False)
+                else:
+                    embed.add_field(name="📋 In History", value="❌ No", inline=False)
+                
+                # Try to fetch video details from YouTube
+                try:
+                    video_details = await self.get_video_details(video_id)
+                    if video_details:
+                        embed.add_field(name="📺 YouTube Status", value="✅ Found", inline=False)
+                        embed.add_field(name="YouTube Title", value=video_details.get('title', 'N/A'), inline=False)
+                        embed.add_field(name="Live Broadcast", value=video_details.get('live_broadcast_content', 'none'), inline=True)
+                        embed.add_field(name="Video Type", value=video_details.get('type', 'unknown'), inline=True)
+                        embed.add_field(name="Published At", value=video_details.get('published_at', 'N/A'), inline=False)
+                        if video_details.get('scheduled_start_time'):
+                            embed.add_field(name="Scheduled Start", value=video_details.get('scheduled_start_time', 'N/A'), inline=False)
+                        embed.add_field(name="Link", value=f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})", inline=False)
+                    else:
+                        embed.add_field(name="📺 YouTube Status", value="❌ Not found or error fetching", inline=False)
+                except Exception as e:
+                    embed.add_field(name="📺 YouTube Status", value=f"❌ Error: {str(e)[:100]}", inline=False)
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+            except Exception as e:
+                self.logger.error(f"Error in check_video command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error checking video: {str(e)[:200]}", ephemeral=True)
 
 def main() -> None:
     try:
