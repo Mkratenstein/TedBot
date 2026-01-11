@@ -942,6 +942,125 @@ class GooseBandTracker(commands.Bot):
                 self.logger.error(f"Error in status command: {e}", exc_info=True)
                 await interaction.followup.send("❌ Error checking status.", ephemeral=True)
 
+        @self.tree.command(name="scrape", description="Manually trigger a YouTube scrape and check for new videos")
+        async def scrape(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await interaction.followup.send("🔄 Starting manual scrape... This may take a moment.", ephemeral=True)
+                
+                # Run the full processing cycle
+                scraped_videos_list = await self._scrape_youtube_and_save()
+                if scraped_videos_list is None:
+                    await interaction.followup.send("❌ Error during scraping. Check logs for details.", ephemeral=True)
+                    return
+                
+                videos_to_post_list = await self._compare_and_prepare_posts(scraped_videos_list)
+                if videos_to_post_list is None:
+                    await interaction.followup.send("❌ Error during comparison. Check logs for details.", ephemeral=True)
+                    return
+                
+                if not videos_to_post_list:
+                    await interaction.followup.send(f"✅ Scrape complete. Found {len(scraped_videos_list)} videos, but no new videos to post.", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"✅ Scrape complete. Found {len(videos_to_post_list)} new video(s) to post. Posting now...", ephemeral=True)
+                    processed_for_history_list = await self._post_new_videos(videos_to_post_list)
+                    await self._update_master_history_and_cleanup(processed_for_history_list)
+                    await interaction.followup.send(f"✅ Posted {len([v for v in processed_for_history_list if v.get('post_status') == 'success'])} video(s) successfully!", ephemeral=True)
+                    
+            except Exception as e:
+                self.logger.error(f"Error in scrape command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error during manual scrape: {str(e)[:200]}", ephemeral=True)
+
+        @self.tree.command(name="postinghistory", description="View recent posting history")
+        async def postinghistory(interaction: discord.Interaction, days: int = 7) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                if not self.posted_videos_data:
+                    await interaction.followup.send("📭 No videos in posting history yet.", ephemeral=True)
+                    return
+                
+                # Filter videos by date
+                cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+                recent_videos = []
+                
+                for video_id, video_data in self.posted_videos_data.items():
+                    posted_at_str = video_data.get('posted_to_discord_at')
+                    if posted_at_str:
+                        try:
+                            posted_at = datetime.fromisoformat(posted_at_str.replace('Z', '+00:00'))
+                            if posted_at >= cutoff_date:
+                                recent_videos.append((video_id, video_data, posted_at))
+                        except (ValueError, AttributeError):
+                            # Fallback to published_at if posted_to_discord_at is invalid
+                            published_at_str = video_data.get('published_at')
+                            if published_at_str:
+                                try:
+                                    published_at = datetime.fromisoformat(published_at_str.replace('Z', '+00:00'))
+                                    if published_at >= cutoff_date:
+                                        recent_videos.append((video_id, video_data, published_at))
+                                except (ValueError, AttributeError):
+                                    pass
+                
+                if not recent_videos:
+                    await interaction.followup.send(f"📭 No videos found in the last {days} day(s).", ephemeral=True)
+                    return
+                
+                # Sort by date (most recent first)
+                recent_videos.sort(key=lambda x: x[2], reverse=True)
+                
+                # Create embed with video list
+                embed = discord.Embed(
+                    title=f"📋 Posting History (Last {days} day(s))",
+                    description=f"Found {len(recent_videos)} video(s)",
+                    color=discord.Color.blue()
+                )
+                
+                # Discord embeds have a limit of 25 fields and 1024 chars per field
+                # Show up to 20 most recent videos
+                for i, (video_id, video_data, date) in enumerate(recent_videos[:20]):
+                    title = video_data.get('title', 'N/A')[:50]  # Truncate long titles
+                    status = video_data.get('post_status', 'unknown')
+                    video_type = video_data.get('type', 'video')
+                    
+                    # Format status emoji
+                    status_emoji = {
+                        'success': '✅',
+                        'skipped_upcoming': '⏭️',
+                        'failed_channel_not_found': '❌',
+                        'failed_no_permission': '❌',
+                        'failed_detail_fetch': '❌',
+                        'failed_discord_forbidden': '❌',
+                        'failed_discord_http': '❌',
+                        'failed_unexpected': '❌',
+                        'history_initialized': '📝'
+                    }.get(status, '❓')
+                    
+                    # Format type emoji
+                    type_emoji = {
+                        'video': '🎥',
+                        'short': '🎞️',
+                        'livestream': '🔴',
+                        'upcoming_live': '⏳'
+                    }.get(video_type, '📹')
+                    
+                    value = f"{status_emoji} {type_emoji} [{title}](https://www.youtube.com/watch?v={video_id})\n"
+                    value += f"Posted: <t:{int(date.timestamp())}:R>"
+                    
+                    embed.add_field(
+                        name=f"{i+1}. {title[:40]}",
+                        value=value,
+                        inline=False
+                    )
+                
+                if len(recent_videos) > 20:
+                    embed.set_footer(text=f"Showing 20 of {len(recent_videos)} videos. Use a smaller days parameter to see more.")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+            except Exception as e:
+                self.logger.error(f"Error in postinghistory command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error retrieving posting history: {str(e)[:200]}", ephemeral=True)
+
 def main() -> None:
     try:
         intents = discord.Intents.default()
