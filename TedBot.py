@@ -1061,6 +1061,156 @@ class GooseBandTracker(commands.Bot):
                 self.logger.error(f"Error in postinghistory command: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Error retrieving posting history: {str(e)[:200]}", ephemeral=True)
 
+        @self.tree.command(name="view_posted_videos", description="View all videos in posted_videos.json")
+        async def view_posted_videos(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                if not self.posted_videos_data:
+                    await interaction.followup.send("📭 `posted_videos.json` is empty.", ephemeral=True)
+                    return
+                
+                embed = discord.Embed(
+                    title="📋 Posted Videos Data",
+                    description=f"Total videos: {len(self.posted_videos_data)}",
+                    color=discord.Color.green()
+                )
+                
+                # Show up to 25 videos (Discord embed limit)
+                for i, (video_id, video_data) in enumerate(list(self.posted_videos_data.items())[:25]):
+                    title = video_data.get('title', 'N/A')[:60]
+                    status = video_data.get('post_status', 'unknown')
+                    video_type = video_data.get('type', 'video')
+                    posted_at = video_data.get('posted_to_discord_at', 'N/A')
+                    published_at = video_data.get('published_at', 'N/A')
+                    
+                    value = f"**ID:** `{video_id}`\n"
+                    value += f"**Type:** {video_type}\n"
+                    value += f"**Status:** {status}\n"
+                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
+                    value += f"**Posted:** {posted_at[:19] if posted_at != 'N/A' else 'N/A'}\n"
+                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    
+                    embed.add_field(
+                        name=f"{i+1}. {title}",
+                        value=value,
+                        inline=False
+                    )
+                
+                if len(self.posted_videos_data) > 25:
+                    embed.set_footer(text=f"Showing 25 of {len(self.posted_videos_data)} videos")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+            except Exception as e:
+                self.logger.error(f"Error in view_posted_videos command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error viewing posted videos: {str(e)[:200]}", ephemeral=True)
+
+        @self.tree.command(name="view_current_scrape", description="View all videos in current_scrape.json")
+        async def view_current_scrape(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                if not os.path.exists(self.current_scrape_file):
+                    await interaction.followup.send("📭 `current_scrape.json` does not exist.", ephemeral=True)
+                    return
+                
+                with open(self.current_scrape_file, 'r') as f:
+                    current_scrape_data = json.load(f)
+                
+                if not current_scrape_data:
+                    await interaction.followup.send("📭 `current_scrape.json` is empty.", ephemeral=True)
+                    return
+                
+                embed = discord.Embed(
+                    title="🔍 Current Scrape Data",
+                    description=f"Total videos: {len(current_scrape_data)}",
+                    color=discord.Color.blue()
+                )
+                
+                # Show up to 25 videos
+                for i, video_data in enumerate(current_scrape_data[:25]):
+                    video_id = video_data.get('id', 'N/A')
+                    title = video_data.get('title', 'N/A')[:60]
+                    video_type = video_data.get('type', 'video')
+                    published_at = video_data.get('published_at', 'N/A')
+                    description = video_data.get('description', '')[:100]
+                    
+                    value = f"**ID:** `{video_id}`\n"
+                    value += f"**Type:** {video_type}\n"
+                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
+                    if description:
+                        value += f"**Description:** {description}...\n"
+                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    
+                    embed.add_field(
+                        name=f"{i+1}. {title}",
+                        value=value,
+                        inline=False
+                    )
+                
+                if len(current_scrape_data) > 25:
+                    embed.set_footer(text=f"Showing 25 of {len(current_scrape_data)} videos")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+            except json.JSONDecodeError as e:
+                await interaction.followup.send(f"❌ Error parsing JSON: {str(e)[:200]}", ephemeral=True)
+            except Exception as e:
+                self.logger.error(f"Error in view_current_scrape command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error viewing current scrape: {str(e)[:200]}", ephemeral=True)
+
+        @self.tree.command(name="view_ready_for_discord", description="View all videos in ready_for_discord.json")
+        async def view_ready_for_discord(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                if not os.path.exists(self.ready_for_discord_file):
+                    await interaction.followup.send("📭 `ready_for_discord.json` does not exist.", ephemeral=True)
+                    return
+                
+                with open(self.ready_for_discord_file, 'r') as f:
+                    ready_data = json.load(f)
+                
+                if not ready_data:
+                    await interaction.followup.send("📭 `ready_for_discord.json` is empty.", ephemeral=True)
+                    return
+                
+                embed = discord.Embed(
+                    title="📤 Ready for Discord Data",
+                    description=f"Total videos ready to post: {len(ready_data)}",
+                    color=discord.Color.orange()
+                )
+                
+                # Show up to 25 videos
+                for i, video_data in enumerate(ready_data[:25]):
+                    video_id = video_data.get('id', 'N/A')
+                    title = video_data.get('title', 'N/A')[:60]
+                    video_type = video_data.get('type', 'video')
+                    published_at = video_data.get('published_at', 'N/A')
+                    description = video_data.get('description', '')[:100]
+                    
+                    value = f"**ID:** `{video_id}`\n"
+                    value += f"**Type:** {video_type}\n"
+                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
+                    if description:
+                        value += f"**Description:** {description}...\n"
+                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    
+                    embed.add_field(
+                        name=f"{i+1}. {title}",
+                        value=value,
+                        inline=False
+                    )
+                
+                if len(ready_data) > 25:
+                    embed.set_footer(text=f"Showing 25 of {len(ready_data)} videos")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+            except json.JSONDecodeError as e:
+                await interaction.followup.send(f"❌ Error parsing JSON: {str(e)[:200]}", ephemeral=True)
+            except Exception as e:
+                self.logger.error(f"Error in view_ready_for_discord command: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error viewing ready for discord: {str(e)[:200]}", ephemeral=True)
+
 def main() -> None:
     try:
         intents = discord.Intents.default()

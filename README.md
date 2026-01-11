@@ -47,6 +47,9 @@ python TedBot.py
   - `/status`: Check bot and YouTube connection status
   - `/scrape`: Manually trigger a YouTube scrape and check for new videos
   - `/postinghistory`: View recent posting history (default: last 7 days)
+  - `/view_posted_videos`: View all videos in posted_videos.json (master history)
+  - `/view_current_scrape`: View all videos in current_scrape.json (current scrape results)
+  - `/view_ready_for_discord`: View all videos in ready_for_discord.json (videos ready to post)
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first.
