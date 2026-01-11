@@ -1211,6 +1211,18 @@ class GooseBandTracker(commands.Bot):
                 self.logger.error(f"Error in view_ready_for_discord command: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Error viewing ready for discord: {str(e)[:200]}", ephemeral=True)
 
+        @self.tree.command(name="sync_commands", description="Manually sync Discord slash commands (admin only)")
+        async def sync_commands(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                self.logger.info("Manual command sync requested")
+                synced = await self.tree.sync()
+                self.logger.info(f"Successfully synced {len(synced)} commands")
+                await interaction.followup.send(f"✅ Successfully synced {len(synced)} command(s)! Commands may take a few minutes to appear globally.", ephemeral=True)
+            except Exception as e:
+                self.logger.error(f"Error syncing commands: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error syncing commands: {str(e)[:200]}", ephemeral=True)
+
 def main() -> None:
     try:
         intents = discord.Intents.default()
