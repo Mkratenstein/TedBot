@@ -7,6 +7,8 @@ from typing import Dict, Optional, List, Any
 import time
 import random as random_module
 import json
+import csv
+import io
 
 import discord
 from discord.ext import commands, tasks
@@ -349,6 +351,7 @@ class GooseBandTracker(commands.Bot):
             if self._save_json_data(self.posted_videos_file, new_history_data):
                 self.posted_videos_data = new_history_data # Update in-memory cache
                 self.logger.info(f"Successfully populated initial history with {len(new_history_data)} videos.")
+                self.logger.info("NOTE: Videos with 'history_initialized' status will NOT be automatically posted to Discord to prevent spam.")
             else:
                 self.logger.error("Failed to save populated initial history to file.")
             self.initial_history_populated = True # Mark as populated (or attempt completed)
@@ -512,12 +515,23 @@ class GooseBandTracker(commands.Bot):
                 existing_video = self.posted_videos_data[video_id]
                 post_status = existing_video.get('post_status', existing_video.get('status', 'unknown'))
                 
+                # IMPORTANT: Do NOT reprocess "history_initialized" videos - these are from initial population
+                # and should NOT be posted automatically to avoid spamming Discord with hundreds of old videos
+                if post_status == "history_initialized":
+                    self.logger.debug(f"Compare Step: Video ID {video_id} is in history from initial population. Skipping (not posting old videos).")
+                    continue
+                
+                # Only reprocess videos that failed or had errors (not initial population)
                 # Reprocess if:
-                # 1. Status is "history_initialized" (from initial population, never posted)
-                # 2. Status is "unknown" (legacy or error)
-                # 3. posted_to_discord_at is None (never actually posted)
-                if post_status == "history_initialized" or post_status == "unknown" or existing_video.get('posted_to_discord_at') is None:
-                    self.logger.info(f"Compare Step: Video ID {video_id} exists in history but was never posted (status: {post_status}). Reprocessing for posting.")
+                # 1. Status indicates a failure (failed_*)
+                # 2. Status is "unknown" AND posted_to_discord_at is None (legacy error case, not initial population)
+                # Do NOT reprocess if it's just missing posted_to_discord_at but has history_initialized status
+                if post_status and 'failed' in str(post_status):
+                    self.logger.info(f"Compare Step: Video ID {video_id} had a previous failure (status: {post_status}). Retrying.")
+                    videos_ready_to_post.append(video_detail)
+                elif post_status == "unknown" and existing_video.get('posted_to_discord_at') is None and post_status != "history_initialized":
+                    # Only reprocess unknown if it's not from initial population
+                    self.logger.info(f"Compare Step: Video ID {video_id} has unknown status and was never posted. Reprocessing.")
                     videos_ready_to_post.append(video_detail)
                 else:
                     # Video was already successfully posted or skipped for valid reason
@@ -920,6 +934,53 @@ class GooseBandTracker(commands.Bot):
             self.logger.error(f"Unexpected error fetching uploads playlist ID: {e}", exc_info=True)
             return None
 
+    def _generate_csv_from_data(self, data: List[Dict[str, Any]], filename: str) -> io.BytesIO:
+        """Generate a CSV file from a list of dictionaries."""
+        if not data:
+            output = io.BytesIO()
+            output.write('\ufeff'.encode('utf-8'))  # BOM for Excel compatibility
+            output.seek(0)
+            return output
+        
+        # Get all unique keys from all dictionaries
+        all_keys = set()
+        for item in data:
+            if isinstance(item, dict):
+                all_keys.update(item.keys())
+        
+        fieldnames = sorted(all_keys)
+        
+        # Write CSV to string first
+        string_output = io.StringIO()
+        writer = csv.DictWriter(string_output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for item in data:
+            if isinstance(item, dict):
+                # Convert None values to empty strings, and ensure all values are strings
+                row = {}
+                for k, v in item.items():
+                    if v is None:
+                        row[k] = ''
+                    else:
+                        row[k] = str(v)
+                writer.writerow(row)
+        
+        # Convert to bytes with BOM for Excel compatibility
+        csv_content = string_output.getvalue()
+        output = io.BytesIO()
+        output.write('\ufeff'.encode('utf-8'))  # BOM for Excel compatibility
+        output.write(csv_content.encode('utf-8'))
+        output.seek(0)
+        return output
+
+    def _generate_json_from_data(self, data: Any, filename: str) -> io.BytesIO:
+        """Generate a JSON file from data."""
+        output = io.BytesIO()
+        json_str = json.dumps(data, indent=2, ensure_ascii=False)
+        output.write(json_str.encode('utf-8'))
+        output.seek(0)
+        return output
+
     def _register_commands(self) -> None:
         @self.tree.command(name="ping", description="Check if the bot is alive")
         async def ping(interaction: discord.Interaction) -> None:
@@ -1074,7 +1135,7 @@ class GooseBandTracker(commands.Bot):
                 self.logger.error(f"Error in postinghistory command: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Error retrieving posting history: {str(e)[:200]}", ephemeral=True)
 
-        @self.tree.command(name="view_posted_videos", description="View all videos in posted_videos.json")
+        @self.tree.command(name="view_posted_videos", description="Download all videos in posted_videos.json as JSON/CSV")
         async def view_posted_videos(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
             try:
@@ -1082,60 +1143,40 @@ class GooseBandTracker(commands.Bot):
                     await interaction.followup.send("📭 `posted_videos.json` is empty.", ephemeral=True)
                     return
                 
+                # Convert dict to list of dicts with video_id included
+                data_list = []
+                for video_id, video_data in self.posted_videos_data.items():
+                    if video_data is None:
+                        video_data = {}
+                    item = {'video_id': video_id, **video_data}
+                    data_list.append(item)
+                
+                # Generate files
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                json_file = self._generate_json_from_data(data_list, f"posted_videos_{timestamp}.json")
+                csv_file = self._generate_csv_from_data(data_list, f"posted_videos_{timestamp}.csv")
+                
+                # Send files
                 embed = discord.Embed(
                     title="📋 Posted Videos Data",
-                    description=f"Total videos: {len(self.posted_videos_data)}",
+                    description=f"Total videos: {len(data_list)}\nFiles attached below.",
                     color=discord.Color.green()
                 )
                 
-                # Show up to 15 videos to avoid embed size limit (6000 chars)
-                # Make output more concise
-                for i, (video_id, video_data) in enumerate(list(self.posted_videos_data.items())[:15]):
-                    # Handle None values safely
-                    if video_data is None:
-                        video_data = {}
-                    
-                    if video_id is None:
-                        video_id = 'unknown'
-                    
-                    title = str(video_data.get('title', 'N/A'))[:50] if video_data.get('title') else 'N/A'
-                    status = video_data.get('post_status') or video_data.get('status', 'unknown')
-                    video_type = video_data.get('type', 'video')
-                    posted_at = video_data.get('posted_to_discord_at')
-                    
-                    # More concise format
-                    status_emoji = '✅' if status == 'success' else '❌' if status and 'failed' in str(status) else '⏭️' if status and 'skipped' in str(status) else '📝' if status == 'history_initialized' else '❓'
-                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
-                    
-                    # Shorten dates - handle None safely
-                    if posted_at and posted_at != 'N/A' and isinstance(posted_at, str):
-                        posted_short = posted_at[:10]
-                    else:
-                        posted_short = 'Never'
-                    
-                    # Safely truncate video_id
-                    video_id_str = str(video_id)
-                    video_id_short = video_id_str[:11] if len(video_id_str) > 11 else video_id_str
-                    
-                    value = f"{status_emoji} {type_emoji} **{status}** | Posted: {posted_short}\n"
-                    value += f"[Watch](https://www.youtube.com/watch?v={video_id_str}) | ID: `{video_id_short}...`"
-                    
-                    embed.add_field(
-                        name=f"{i+1}. {title}",
-                        value=value,
-                        inline=False
-                    )
-                
-                if len(self.posted_videos_data) > 15:
-                    embed.set_footer(text=f"Showing 15 of {len(self.posted_videos_data)} videos. Use /postinghistory for more details.")
-                
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                await interaction.followup.send(
+                    embed=embed,
+                    files=[
+                        discord.File(json_file, filename=f"posted_videos_{timestamp}.json"),
+                        discord.File(csv_file, filename=f"posted_videos_{timestamp}.csv")
+                    ],
+                    ephemeral=True
+                )
                 
             except Exception as e:
                 self.logger.error(f"Error in view_posted_videos command: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ Error viewing posted videos: {str(e)[:200]}", ephemeral=True)
+                await interaction.followup.send(f"❌ Error generating files: {str(e)[:200]}", ephemeral=True)
 
-        @self.tree.command(name="view_current_scrape", description="View all videos in current_scrape.json")
+        @self.tree.command(name="view_current_scrape", description="Download all videos in current_scrape.json as JSON/CSV")
         async def view_current_scrape(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
             try:
@@ -1150,43 +1191,34 @@ class GooseBandTracker(commands.Bot):
                     await interaction.followup.send("📭 `current_scrape.json` is empty.", ephemeral=True)
                     return
                 
+                # Generate files
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                json_file = self._generate_json_from_data(current_scrape_data, f"current_scrape_{timestamp}.json")
+                csv_file = self._generate_csv_from_data(current_scrape_data, f"current_scrape_{timestamp}.csv")
+                
+                # Send files
                 embed = discord.Embed(
                     title="🔍 Current Scrape Data",
-                    description=f"Total videos: {len(current_scrape_data)}",
+                    description=f"Total videos: {len(current_scrape_data)}\nFiles attached below.",
                     color=discord.Color.blue()
                 )
                 
-                # Show up to 15 videos to avoid embed size limit
-                for i, video_data in enumerate(current_scrape_data[:15]):
-                    video_id = video_data.get('id', 'N/A')
-                    title = video_data.get('title', 'N/A')[:50]
-                    video_type = video_data.get('type', 'video')
-                    published_at = video_data.get('published_at', 'N/A')
-                    
-                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
-                    published_short = published_at[:10] if published_at != 'N/A' else 'N/A'
-                    
-                    value = f"{type_emoji} **{video_type}** | Published: {published_short}\n"
-                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
-                    
-                    embed.add_field(
-                        name=f"{i+1}. {title}",
-                        value=value,
-                        inline=False
-                    )
-                
-                if len(current_scrape_data) > 15:
-                    embed.set_footer(text=f"Showing 15 of {len(current_scrape_data)} videos")
-                
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                await interaction.followup.send(
+                    embed=embed,
+                    files=[
+                        discord.File(json_file, filename=f"current_scrape_{timestamp}.json"),
+                        discord.File(csv_file, filename=f"current_scrape_{timestamp}.csv")
+                    ],
+                    ephemeral=True
+                )
                 
             except json.JSONDecodeError as e:
                 await interaction.followup.send(f"❌ Error parsing JSON: {str(e)[:200]}", ephemeral=True)
             except Exception as e:
                 self.logger.error(f"Error in view_current_scrape command: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ Error viewing current scrape: {str(e)[:200]}", ephemeral=True)
+                await interaction.followup.send(f"❌ Error generating files: {str(e)[:200]}", ephemeral=True)
 
-        @self.tree.command(name="view_ready_for_discord", description="View all videos in ready_for_discord.json")
+        @self.tree.command(name="view_ready_for_discord", description="Download all videos in ready_for_discord.json as JSON/CSV")
         async def view_ready_for_discord(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
             try:
@@ -1201,41 +1233,32 @@ class GooseBandTracker(commands.Bot):
                     await interaction.followup.send("📭 `ready_for_discord.json` is empty.", ephemeral=True)
                     return
                 
+                # Generate files
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                json_file = self._generate_json_from_data(ready_data, f"ready_for_discord_{timestamp}.json")
+                csv_file = self._generate_csv_from_data(ready_data, f"ready_for_discord_{timestamp}.csv")
+                
+                # Send files
                 embed = discord.Embed(
                     title="📤 Ready for Discord Data",
-                    description=f"Total videos ready to post: {len(ready_data)}",
+                    description=f"Total videos ready to post: {len(ready_data)}\nFiles attached below.",
                     color=discord.Color.orange()
                 )
                 
-                # Show up to 15 videos to avoid embed size limit
-                for i, video_data in enumerate(ready_data[:15]):
-                    video_id = video_data.get('id', 'N/A')
-                    title = video_data.get('title', 'N/A')[:50]
-                    video_type = video_data.get('type', 'video')
-                    published_at = video_data.get('published_at', 'N/A')
-                    
-                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
-                    published_short = published_at[:10] if published_at != 'N/A' else 'N/A'
-                    
-                    value = f"{type_emoji} **{video_type}** | Published: {published_short}\n"
-                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
-                    
-                    embed.add_field(
-                        name=f"{i+1}. {title}",
-                        value=value,
-                        inline=False
-                    )
-                
-                if len(ready_data) > 15:
-                    embed.set_footer(text=f"Showing 15 of {len(ready_data)} videos")
-                
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                await interaction.followup.send(
+                    embed=embed,
+                    files=[
+                        discord.File(json_file, filename=f"ready_for_discord_{timestamp}.json"),
+                        discord.File(csv_file, filename=f"ready_for_discord_{timestamp}.csv")
+                    ],
+                    ephemeral=True
+                )
                 
             except json.JSONDecodeError as e:
                 await interaction.followup.send(f"❌ Error parsing JSON: {str(e)[:200]}", ephemeral=True)
             except Exception as e:
                 self.logger.error(f"Error in view_ready_for_discord command: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ Error viewing ready for discord: {str(e)[:200]}", ephemeral=True)
+                await interaction.followup.send(f"❌ Error generating files: {str(e)[:200]}", ephemeral=True)
 
         @self.tree.command(name="sync_commands", description="Manually sync Discord slash commands (admin only)")
         async def sync_commands(interaction: discord.Interaction) -> None:
