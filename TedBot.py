@@ -1091,20 +1091,34 @@ class GooseBandTracker(commands.Bot):
                 # Show up to 15 videos to avoid embed size limit (6000 chars)
                 # Make output more concise
                 for i, (video_id, video_data) in enumerate(list(self.posted_videos_data.items())[:15]):
-                    title = video_data.get('title', 'N/A')[:50]
-                    status = video_data.get('post_status', video_data.get('status', 'unknown'))
+                    # Handle None values safely
+                    if video_data is None:
+                        video_data = {}
+                    
+                    if video_id is None:
+                        video_id = 'unknown'
+                    
+                    title = str(video_data.get('title', 'N/A'))[:50] if video_data.get('title') else 'N/A'
+                    status = video_data.get('post_status') or video_data.get('status', 'unknown')
                     video_type = video_data.get('type', 'video')
-                    posted_at = video_data.get('posted_to_discord_at', 'N/A')
+                    posted_at = video_data.get('posted_to_discord_at')
                     
                     # More concise format
-                    status_emoji = '✅' if status == 'success' else '❌' if 'failed' in status else '⏭️' if 'skipped' in status else '📝' if status == 'history_initialized' else '❓'
+                    status_emoji = '✅' if status == 'success' else '❌' if status and 'failed' in str(status) else '⏭️' if status and 'skipped' in str(status) else '📝' if status == 'history_initialized' else '❓'
                     type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
                     
-                    # Shorten dates
-                    posted_short = posted_at[:10] if posted_at != 'N/A' else 'Never'
+                    # Shorten dates - handle None safely
+                    if posted_at and posted_at != 'N/A' and isinstance(posted_at, str):
+                        posted_short = posted_at[:10]
+                    else:
+                        posted_short = 'Never'
+                    
+                    # Safely truncate video_id
+                    video_id_str = str(video_id)
+                    video_id_short = video_id_str[:11] if len(video_id_str) > 11 else video_id_str
                     
                     value = f"{status_emoji} {type_emoji} **{status}** | Posted: {posted_short}\n"
-                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
+                    value += f"[Watch](https://www.youtube.com/watch?v={video_id_str}) | ID: `{video_id_short}...`"
                     
                     embed.add_field(
                         name=f"{i+1}. {title}",
