@@ -1088,20 +1088,23 @@ class GooseBandTracker(commands.Bot):
                     color=discord.Color.green()
                 )
                 
-                # Show up to 25 videos (Discord embed limit)
-                for i, (video_id, video_data) in enumerate(list(self.posted_videos_data.items())[:25]):
-                    title = video_data.get('title', 'N/A')[:60]
-                    status = video_data.get('post_status', 'unknown')
+                # Show up to 15 videos to avoid embed size limit (6000 chars)
+                # Make output more concise
+                for i, (video_id, video_data) in enumerate(list(self.posted_videos_data.items())[:15]):
+                    title = video_data.get('title', 'N/A')[:50]
+                    status = video_data.get('post_status', video_data.get('status', 'unknown'))
                     video_type = video_data.get('type', 'video')
                     posted_at = video_data.get('posted_to_discord_at', 'N/A')
-                    published_at = video_data.get('published_at', 'N/A')
                     
-                    value = f"**ID:** `{video_id}`\n"
-                    value += f"**Type:** {video_type}\n"
-                    value += f"**Status:** {status}\n"
-                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
-                    value += f"**Posted:** {posted_at[:19] if posted_at != 'N/A' else 'N/A'}\n"
-                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    # More concise format
+                    status_emoji = '✅' if status == 'success' else '❌' if 'failed' in status else '⏭️' if 'skipped' in status else '📝' if status == 'history_initialized' else '❓'
+                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
+                    
+                    # Shorten dates
+                    posted_short = posted_at[:10] if posted_at != 'N/A' else 'Never'
+                    
+                    value = f"{status_emoji} {type_emoji} **{status}** | Posted: {posted_short}\n"
+                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
                     
                     embed.add_field(
                         name=f"{i+1}. {title}",
@@ -1109,8 +1112,8 @@ class GooseBandTracker(commands.Bot):
                         inline=False
                     )
                 
-                if len(self.posted_videos_data) > 25:
-                    embed.set_footer(text=f"Showing 25 of {len(self.posted_videos_data)} videos")
+                if len(self.posted_videos_data) > 15:
+                    embed.set_footer(text=f"Showing 15 of {len(self.posted_videos_data)} videos. Use /postinghistory for more details.")
                 
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
@@ -1139,20 +1142,18 @@ class GooseBandTracker(commands.Bot):
                     color=discord.Color.blue()
                 )
                 
-                # Show up to 25 videos
-                for i, video_data in enumerate(current_scrape_data[:25]):
+                # Show up to 15 videos to avoid embed size limit
+                for i, video_data in enumerate(current_scrape_data[:15]):
                     video_id = video_data.get('id', 'N/A')
-                    title = video_data.get('title', 'N/A')[:60]
+                    title = video_data.get('title', 'N/A')[:50]
                     video_type = video_data.get('type', 'video')
                     published_at = video_data.get('published_at', 'N/A')
-                    description = video_data.get('description', '')[:100]
                     
-                    value = f"**ID:** `{video_id}`\n"
-                    value += f"**Type:** {video_type}\n"
-                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
-                    if description:
-                        value += f"**Description:** {description}...\n"
-                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
+                    published_short = published_at[:10] if published_at != 'N/A' else 'N/A'
+                    
+                    value = f"{type_emoji} **{video_type}** | Published: {published_short}\n"
+                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
                     
                     embed.add_field(
                         name=f"{i+1}. {title}",
@@ -1160,8 +1161,8 @@ class GooseBandTracker(commands.Bot):
                         inline=False
                     )
                 
-                if len(current_scrape_data) > 25:
-                    embed.set_footer(text=f"Showing 25 of {len(current_scrape_data)} videos")
+                if len(current_scrape_data) > 15:
+                    embed.set_footer(text=f"Showing 15 of {len(current_scrape_data)} videos")
                 
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
@@ -1192,20 +1193,18 @@ class GooseBandTracker(commands.Bot):
                     color=discord.Color.orange()
                 )
                 
-                # Show up to 25 videos
-                for i, video_data in enumerate(ready_data[:25]):
+                # Show up to 15 videos to avoid embed size limit
+                for i, video_data in enumerate(ready_data[:15]):
                     video_id = video_data.get('id', 'N/A')
-                    title = video_data.get('title', 'N/A')[:60]
+                    title = video_data.get('title', 'N/A')[:50]
                     video_type = video_data.get('type', 'video')
                     published_at = video_data.get('published_at', 'N/A')
-                    description = video_data.get('description', '')[:100]
                     
-                    value = f"**ID:** `{video_id}`\n"
-                    value += f"**Type:** {video_type}\n"
-                    value += f"**Published:** {published_at[:19] if published_at != 'N/A' else 'N/A'}\n"
-                    if description:
-                        value += f"**Description:** {description}...\n"
-                    value += f"[Watch on YouTube](https://www.youtube.com/watch?v={video_id})"
+                    type_emoji = '🎥' if video_type == 'video' else '🎞️' if video_type == 'short' else '🔴' if video_type == 'livestream' else '📹'
+                    published_short = published_at[:10] if published_at != 'N/A' else 'N/A'
+                    
+                    value = f"{type_emoji} **{video_type}** | Published: {published_short}\n"
+                    value += f"[Watch](https://www.youtube.com/watch?v={video_id}) | ID: `{video_id[:11]}...`"
                     
                     embed.add_field(
                         name=f"{i+1}. {title}",
@@ -1213,8 +1212,8 @@ class GooseBandTracker(commands.Bot):
                         inline=False
                     )
                 
-                if len(ready_data) > 25:
-                    embed.set_footer(text=f"Showing 25 of {len(ready_data)} videos")
+                if len(ready_data) > 15:
+                    embed.set_footer(text=f"Showing 15 of {len(ready_data)} videos")
                 
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
