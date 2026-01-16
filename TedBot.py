@@ -460,12 +460,13 @@ class GooseBandTracker(commands.Bot):
             self.logger.info("First run detected - fetching all videos")
             scraped_videos_details = await self._get_all_channel_videos()
         else:
-            # Get videos from the last 3 days to ensure we don't miss any
-            # This is more inclusive than just "yesterday" and handles edge cases
-            three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
-            three_days_ago = three_days_ago.replace(hour=0, minute=0, second=0, microsecond=0)
-            self.logger.info(f"Regular run - fetching videos published since {three_days_ago.isoformat()}")
-            scraped_videos_details = await self.get_recent_videos(max_results=50, published_after=three_days_ago)
+            # Get videos from the last 7 days to ensure we don't miss premieres
+            # Premieres often have published_at set to when they were scheduled (days before they air)
+            # So we need a wider window to catch them
+            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            seven_days_ago = seven_days_ago.replace(hour=0, minute=0, second=0, microsecond=0)
+            self.logger.info(f"Regular run - fetching videos published since {seven_days_ago.isoformat()} (extended window to catch premieres)")
+            scraped_videos_details = await self.get_recent_videos(max_results=100, published_after=seven_days_ago)
 
         if scraped_videos_details is None:
             self.logger.error("Scrape Step: Failed to fetch videos from YouTube.")
@@ -519,6 +520,23 @@ class GooseBandTracker(commands.Bot):
                 # and should NOT be posted automatically to avoid spamming Discord with hundreds of old videos
                 if post_status == "history_initialized":
                     self.logger.debug(f"Compare Step: Video ID {video_id} is in history from initial population. Skipping (not posting old videos).")
+                    continue
+                
+                # Special handling for "skipped_upcoming" - check if premiere has now ended
+                if post_status == "skipped_upcoming":
+                    self.logger.info(f"Compare Step: Video ID {video_id} was previously skipped as upcoming. Checking if premiere has ended...")
+                    # Fetch current video details to check if premiere has ended
+                    current_details = await self.get_video_details(video_id)
+                    if current_details:
+                        current_type = current_details.get('type', 'unknown')
+                        if current_type != "upcoming_live":
+                            # Premiere has ended, reprocess for posting
+                            self.logger.info(f"Compare Step: Video ID {video_id} premiere has ended (now type: {current_type}). Reprocessing for posting.")
+                            videos_ready_to_post.append(video_detail)
+                        else:
+                            self.logger.debug(f"Compare Step: Video ID {video_id} is still upcoming. Skipping.")
+                    else:
+                        self.logger.warning(f"Compare Step: Could not fetch details for video ID {video_id}. Skipping.")
                     continue
                 
                 # Only reprocess videos that failed or had errors (not initial population)
@@ -767,6 +785,8 @@ class GooseBandTracker(commands.Bot):
                             published_at = datetime.fromisoformat(published_at_raw.replace('Z', '+00:00'))
                             
                             # Skip if before published_after date
+                            # Note: For premiered videos, published_at may be set to when premiere was scheduled,
+                            # not when it actually aired. We rely on the wider date window to catch these.
                             if published_after and published_at < published_after:
                                 self.logger.debug(f"Skipping video {video_id} published at {published_at} (before {published_after})")
                                 continue
@@ -860,13 +880,24 @@ class GooseBandTracker(commands.Bot):
 
             # Handle premiered videos
             if lbc == "none" and video_details["scheduled_start_time"]:
-                # This was a premiere that has ended
+                # This was a premiere - check if it has actually aired
                 scheduled_start = datetime.fromisoformat(video_details["scheduled_start_time"].replace('Z', '+00:00'))
-                if current_time > scheduled_start:
-                    self.logger.info(f"Video {video_id} was a premiere that has ended. Treating as regular video.")
+                
+                # Use actual_start_time if available (more accurate than scheduled)
+                if video_details["actual_start_time"]:
+                    actual_start = datetime.fromisoformat(video_details["actual_start_time"].replace('Z', '+00:00'))
+                    if current_time > actual_start:
+                        self.logger.info(f"Video {video_id} was a premiere that has ended (actual start: {actual_start}). Treating as regular video.")
+                        video_details["type"] = "video"
+                    else:
+                        self.logger.info(f"Video {video_id} is an upcoming premiere (actual start: {actual_start}). Will be posted when it starts.")
+                        video_details["type"] = "upcoming_live"
+                elif current_time > scheduled_start:
+                    # No actual_start_time yet, but scheduled time has passed - premiere has likely ended
+                    self.logger.info(f"Video {video_id} was a premiere that has ended (scheduled: {scheduled_start}). Treating as regular video.")
                     video_details["type"] = "video"
                 else:
-                    self.logger.info(f"Video {video_id} is an upcoming premiere. Will be posted when it starts.")
+                    self.logger.info(f"Video {video_id} is an upcoming premiere (scheduled: {scheduled_start}). Will be posted when it starts.")
                     video_details["type"] = "upcoming_live"
             elif lbc == "live":
                 video_details["type"] = "livestream"
